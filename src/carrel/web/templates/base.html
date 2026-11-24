@@ -1,0 +1,48 @@
+{% macro icon(name, cls='') -%}<i data-lucide="{{ name }}" class="icon {{ cls }}" aria-hidden="true"></i>{%- endmacro %}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Carrel{% endblock %}</title>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('carrel-theme') || 'light'; } catch {}</script>
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css?v={{ static_v }}">
+  <link rel="stylesheet" href="/static/app.css?v={{ static_v }}">
+  <link rel="stylesheet" href="/static/processing.css?v={{ static_v }}">
+  {% block styles %}{% endblock %}
+</head>
+<body>
+<a class="skip-link" href="#main-content">跳到内容</a>
+<aside class="app-sidebar" aria-label="主导航">
+  <a class="brand" href="/" aria-label="Carrel 论文库"><span class="brand-mark">{{ icon('book-open') }}</span><span>Carrel<small>个人论文库</small></span></a>
+  <nav>
+    {% for url, label, glyph in [('/', '论文库', 'library'), ('/collections', '阅读集合', 'folders'), ('/categories', '分类管理', 'folder-tree'), ('/relations', '论文关系', 'network'), ('/jobs', '处理任务', 'activity'), ('/settings', '设置', 'settings-2')] %}
+    {% if url != '/collections' or local_sync_enabled %}
+    {% set active = request.url.path == url or (url == '/' and request.url.path.startswith('/papers/')) %}
+    <a href="{{ url }}" class="nav-link {{ 'on' if active }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
+    {% endif %}
+    {% endfor %}
+  </nav>
+  <a class="btn primary sidebar-import" href="/import">{{ icon('plus') }}<span>导入论文</span></a>
+  <div class="sidebar-bottom">
+    <span class="local-label"><span class="dot ready"></span> 本地资料库</span>
+    <button class="icon-btn" id="theme-toggle" aria-label="切换深色主题" title="切换深色主题">{{ icon('moon') }}</button>
+  </div>
+</aside>
+<div class="workspace">
+  <header class="workspace-bar"><span>{% block breadcrumb %}我的资料库{% endblock %}</span><span class="workspace-wordmark">CARREL</span></header>
+  <main id="main-content" tabindex="-1">{% block content %}{% endblock %}</main>
+  <footer class="foot"><span>Carrel</span><span>我的论文，我的阅读空间</span></footer>
+</div>
+<div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+<script src="/static/vendor/lucide.min.js?v={{ static_v }}"></script>
+<script src="/static/vendor/katex/katex.min.js?v={{ static_v }}"></script>
+<script src="/static/vendor/katex/auto-render.min.js?v={{ static_v }}"></script>
+<script src="/static/vendor/markdown-it.min.js?v={{ static_v }}"></script>
+<script src="/static/vendor/texmath.js?v={{ static_v }}"></script>
+<script src="/static/app.js?v={{ static_v }}"></script>
+<script src="/static/processing.js?v={{ static_v }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carrel"
+version = "0.1.0"
+description = "Personal paper reading and organization desk"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "jinja2>=3.1",
+  "httpx>=0.27",
+  "pydantic-settings>=2.2",
+  "platformdirs>=4.0",
+  "python-multipart>=0.0.9",
+  "markdown-it-py>=3.0",
+  "pypdf>=5.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+browser = ["playwright>=1.49"]
+
+[project.urls]
+Repository = "https://github.com/AltmanD/carrel"
+Issues = "https://github.com/AltmanD/carrel/issues"
+
+[project.scripts]
+carrel = "carrel.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+carrel = ["taxonomy.toml", "web/templates/*.html", "web/static/*", "web/static/vendor/*", "web/static/vendor/katex/*", "web/static/vendor/katex/fonts/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["smoke: no network, no model", "browser: requires Playwright and Chromium"]

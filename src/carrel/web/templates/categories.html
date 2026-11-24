@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}分类管理 · Carrel{% endblock %}
+{% block breadcrumb %}分类管理{% endblock %}
+{% block content %}
+{% macro edit_category(discipline, field='') -%}
+<button type="button" class="icon-btn small" data-edit-taxonomy data-discipline="{{ discipline }}" data-field="{{ field }}" aria-label="修改{{ field or discipline }}" title="修改{{ field or discipline }}">{{ icon('pencil') }}</button>
+{%- endmacro %}
+<header class="page-head"><div><p class="eyebrow">整理资料库</p><h1>分类管理</h1><p class="page-meta">{{ tree|length }} 个研究方向</p></div><a class="btn" href="#new-category">{{ icon('plus') }}新增分类</a></header>
+<div class="tree">
+  {% for top in tree %}
+  <section class="branch">
+    <div class="branch-heading"><h2>{{ icon('folder-open') }}<a href="/?discipline={{ top.path|urlencode }}">{{ top.label }}</a></h2><span class="count">{{ top.count }} 篇</span>{{ edit_category(top.path) }}</div>
+    <div class="leaves">
+      {% for leaf in top.children %}
+      <div class="category-group">
+        <div class="taxonomy-row"><a href="/?discipline={{ top.path|urlencode }}&field={{ leaf.path|urlencode }}">{{ leaf.label }}</a><span class="count">{{ leaf.count }}</span>{{ edit_category(top.path, leaf.path) }}</div>
+      </div>
+      {% else %}<span class="dim small-text">暂无具体主题</span>{% endfor %}
+    </div>
+  </section>
+  {% else %}<div class="empty">{{ icon('folder-open') }}<h2>还没有已归类的论文</h2><a class="btn primary" href="/import">{{ icon('plus') }}导入论文</a></div>{% endfor %}
+</div>
+<section class="cat-add-panel" id="new-category">
+  <h2>新增分类</h2>
+  <form class="cat-add-form" id="cat-add-form">
+    <div class="field-group"><label for="new-discipline">研究方向</label><input id="new-discipline" name="discipline" placeholder="模型训练与对齐" list="discipline-options" maxlength="80" required></div>
+    <div class="field-group"><label for="new-field">具体主题</label><input id="new-field" name="field" placeholder="强化学习" list="field-options" maxlength="80" required></div>
+    <button class="btn primary" type="submit">{{ icon('plus') }}添加分类</button>
+    <p class="form-error" role="alert" hidden></p>
+  </form>
+</section>
+<dialog id="taxonomy-dialog" class="edit-dialog" aria-labelledby="taxonomy-dialog-title">
+  <form id="taxonomy-edit-form">
+    <div class="dialog-head"><h2 id="taxonomy-dialog-title">修改分类</h2><button type="button" class="icon-btn" data-close-dialog aria-label="关闭" title="关闭">{{ icon('x') }}</button></div>
+    <p class="taxonomy-context dim small-text" id="taxonomy-context"></p>
+    <label for="taxonomy-name" id="taxonomy-name-label">分类名称</label><input id="taxonomy-name" name="name" required maxlength="80" autocomplete="off">
+    <p class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button type="button" class="btn" data-close-dialog>取消</button><button class="btn primary" type="submit">{{ icon('check') }}保存修改</button></div>
+  </form>
+</dialog>
+<datalist id="discipline-options"></datalist><datalist id="field-options"></datalist>
+<script type="application/json" id="taxonomy-data">{{ taxonomy_paths|tojson }}</script>
+{% endblock %}

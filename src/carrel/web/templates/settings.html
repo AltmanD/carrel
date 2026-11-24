@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}设置 · Carrel{% endblock %}
+{% block breadcrumb %}设置{% endblock %}
+{% block content %}
+<div id="settings-page">
+  <header class="page-head"><div><p class="eyebrow">按需分配模型</p><h1>模型设置</h1><p class="page-meta">管理 API 连接，为不同处理任务选择合适的模型。保存后立即生效。</p></div><button class="btn primary" id="provider-add">{{ icon('plus') }}添加提供方</button></header>
+  <p id="settings-error" class="form-error" role="alert" hidden></p>
+  <section class="settings-section"><h2>导入默认处理深度</h2><p class="dim">新导入使用此配置。速览适合先了解论文并进入图谱；需要逐章阅读时再升级。</p><form id="processing-default-form"><div data-processing-picker="settings">正在读取…</div><button class="btn primary" type="submit" disabled>保存默认处理深度</button></form></section>
+  <section class="settings-section" aria-labelledby="providers-title">
+    <h2 id="providers-title">服务提供方 <span class="dim small-text">API key / Coding plan</span></h2>
+    <p class="dim">添加服务商或中转站的 API 地址和密钥。使用 Coding plan 时，请填写其专用 API 地址。</p>
+    <div class="table-scroll"><table class="runs"><caption class="sr-only">已保存的模型服务提供方</caption><thead><tr><th>提供方</th><th>连接</th><th>默认模型</th><th>密钥</th><th>操作</th></tr></thead><tbody id="provider-rows"><tr><td colspan="5">正在加载…</td></tr></tbody></table></div>
+    <p class="dim small-text">密钥保存在本地资料库的 providers.toml 中，也可填写环境变量名。API 仅返回打码值。</p>
+    <p id="probe-result" role="status" aria-live="polite" hidden></p>
+  </section>
+  <section class="settings-section" aria-labelledby="routes-title">
+    <h2 id="routes-title">任务分配</h2>
+    <form id="routes-form">
+      <p class="dim">先选一个默认模型，再按需要为下面四组工作选择其他模型。保存后用于后续处理，已有论文不会自动重新生成。</p>
+      <div class="settings-default field-group"><label for="default-provider">默认使用的模型</label><select id="default-provider" aria-describedby="default-model-hint"><option value="">沿用原有模型配置</option></select><span id="default-model-hint" class="dim small-text">各功能组默认跟随这里的选择。</span></div>
+      <div id="route-groups" class="route-groups" aria-label="按功能分配模型"></div>
+      <details class="route-advanced" id="route-advanced"><summary>高级：逐项调整模型与生成参数 <span id="route-custom-count" class="dim small-text"></span></summary>
+        <div class="route-help">
+          <p><strong>单独设置</strong>：仅覆盖这一项任务；关闭后跟随默认模型。模型名留空时使用所选提供方的默认模型。</p>
+          <p><strong>思考强度</strong>：提高后模型会花更多时间推敲，通常更慢、费用更高；不保证结果一定更好。一般保留默认即可。</p>
+          <p><strong>回复预算</strong>：一次请求最多可生成的 token 数，包含思考内容。提高可减少长输出被截断的机会，但允许更高开销，不会强制模型写得更长。留空使用各任务的默认值。</p>
+        </div>
+        <div class="table-scroll"><table class="runs route-table"><thead><tr><th>任务</th><th>单独设置</th><th>提供方</th><th>模型名</th><th>思考强度</th><th>回复预算（token）</th></tr></thead><tbody id="route-rows"></tbody></table></div>
+      </details>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="settings-actions route-savebar"><span id="route-dirty" class="route-save-status" role="status" aria-live="polite">加载中…</span><div class="settings-row-actions"><button class="btn" type="button" id="routes-reset" hidden>撤销修改</button><button class="btn primary" type="submit">{{ icon('check') }}保存任务分配</button></div></div>
+    </form>
+  </section>
+  <section class="settings-section" aria-labelledby="verify-title">
+    <h2 id="verify-title">验证并应用推荐路由</h2>
+    <p class="dim">将全部 12 项任务分配给同一个提供方前，使用库内真实论文逐项验证输出，并与原配置中的 GLM 基线比较。连通测试成功仅说明 API 可访问。</p>
+    <div class="settings-verify-controls"><div class="field-group"><label for="verify-provider">目标提供方</label><select id="verify-provider"><option value="">选择提供方</option></select></div><div class="field-group"><label for="verify-baseline">GLM 对比基线</label><select id="verify-baseline"><option value="">原模型配置</option></select></div><button type="button" class="btn" id="verify-start">{{ icon('flask-conical') }}逐任务验证</button><button type="button" class="btn primary" id="recommend-apply" disabled>应用推荐路由</button></div>
+    <p class="dim small-text">验证会发起模型请求并消耗额度，通常需要数分钟。模型、地址、密钥或思考强度修改后需重新验证。curate 为预留标签整理任务，使用分类输出格式验证。</p>
+    <p id="verification-status" role="status" aria-live="polite">选择提供方后查看验证结果。</p>
+    <div id="verification-report"></div>
+  </section>
+</div>
+<dialog class="edit-dialog provider-dialog" id="provider-dialog" aria-labelledby="provider-title">
+  <form id="provider-form">
+    <div class="dialog-head"><h2 id="provider-title">添加提供方</h2><button type="button" class="icon-btn" data-close-dialog aria-label="关闭">{{ icon('x') }}</button></div>
+    <div class="provider-fields">
+      <div class="field-group"><label for="provider-label">显示名称</label><input id="provider-label" name="label" placeholder="例如：GPT 中转" required maxlength="100"></div>
+      <div class="field-group"><label for="provider-id">唯一 ID</label><input id="provider-id" name="id" placeholder="例如：relay-gpt" required pattern="[a-z0-9][a-z0-9_-]{0,63}" maxlength="64"><span class="dim small-text">创建后不可修改。</span></div>
+      <div class="field-group"><label for="provider-protocol">API 协议</label><select id="provider-protocol" name="protocol"><option value="responses">OpenAI Responses</option><option value="chat-completions">OpenAI Chat Completions</option><option value="messages">Anthropic Messages</option></select></div>
+      <div class="field-group"><label for="provider-model">默认模型名</label><input id="provider-model" name="model" placeholder="填写服务方提供的模型 ID" required></div>
+      <div class="field-group provider-wide"><label for="provider-base-url">API 地址</label><input id="provider-base-url" type="url" name="base_url" placeholder="https://api.example.com/v1" required><span class="dim small-text">可含 /v1 或服务方要求的路径前缀。</span></div>
+      <div class="field-group"><label for="provider-key">API key</label><input id="provider-key" type="password" name="api_key" autocomplete="new-password" placeholder="编辑时留空保留原密钥"></div>
+      <div class="field-group"><label for="provider-env">密钥环境变量（选填）</label><input id="provider-env" name="api_key_env" placeholder="CARREL_GPT_KEY" pattern="[A-Za-z_][A-Za-z0-9_]*"><span class="dim small-text">服务进程中的变量值优先于上面的密钥。</span></div>
+      <div class="field-group"><label for="provider-thinking">默认思考强度</label><select id="provider-thinking" name="thinking"><option value="low">低</option><option value="disabled">关闭</option><option value="medium">中</option><option value="high">高</option></select></div>
+      <div class="field-group"><label for="provider-notes">备注（选填）</label><input id="provider-notes" name="notes" placeholder="服务限制、用途等"></div>
+    </div>
+    <details><summary>高级配置</summary><div class="provider-fields">
+      <div class="field-group"><label for="provider-timeout">超时（秒）</label><input id="provider-timeout" type="number" name="timeout_s" min="1" max="600" value="150" required></div>
+      <div class="field-group"><label for="provider-concurrency">最多同时请求数</label><input id="provider-concurrency" type="number" name="max_concurrency" min="1" max="64" value="12" required><span class="dim small-text">此提供方供全库共享。提高可加快批量处理；遇到限流或超时会自动降低，恢复稳定后再逐步回升。</span></div>
+      <p class="dim small-text provider-wide">导入遇到临时网络故障时自动退避，默认每次请求最多尝试 4 次。无需为各任务分别设置重试次数。</p>
+      <div class="field-group provider-wide"><label for="provider-headers">额外请求头（JSON 对象）</label><textarea id="provider-headers" name="extra_headers" rows="3" spellcheck="false" placeholder='{"x-api-version": "2026-01-01"}'></textarea></div>
+      <div class="field-group provider-wide"><label for="provider-pricing">价格（美元 / 百万 token，JSON 对象）</label><textarea id="provider-pricing" name="pricing" rows="3" spellcheck="false" placeholder='{"input": 1.0, "output": 4.0, "cache_read": 0.1}'></textarea><span class="dim small-text">留空表示未配置价格；usage 中的成本仅供估算。</span></div>
+    </div></details>
+    <p class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button class="btn" type="button" data-close-dialog>取消</button><button class="btn primary" type="submit">保存提供方</button></div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="/static/settings.js?v={{ static_v }}"></script>{% endblock %}

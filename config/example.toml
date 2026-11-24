@@ -1,0 +1,18 @@
+# Copy to config/local.toml and fill in your provider credentials.
+# The Web interface starts with empty tokens; analysis needs the services below.
+[mineru]
+token = ""
+
+[model]
+# messages | chat-completions | responses
+protocol = "chat-completions"
+base_url = ""  # Provider API base URL, including /v1 when required.
+api_key = ""
+name = ""      # Model ID available to your account.
+thinking = "disabled"
+
+[openalex]
+api_key = ""
+
+[sciverse]
+token = ""

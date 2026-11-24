@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}导入论文 · Carrel{% endblock %}
+{% block styles %}<link rel="stylesheet" href="/static/sync.css?v={{ static_v }}">{% endblock %}
+{% block breadcrumb %}<a href="/">论文库</a><span>/</span><span>导入论文</span>{% endblock %}
+{% block content %}
+<header class="page-head"><div><p class="eyebrow">添加到资料库</p><h1>导入论文</h1></div></header>
+{% if local_sync_enabled %}<nav class="import-modes" aria-label="导入方式"><a class="on" href="/import" aria-current="page">{{ icon('link') }}论文链接 / PDF</a><a href="/sync">{{ icon('folder-input') }}本地目录</a></nav>{% endif %}
+<div class="import-layout">
+  <div class="import-box">
+    <div data-processing-picker="import" id="import-processing" aria-label="本批论文处理深度">正在读取处理深度…</div>
+    <form id="import-form"><label for="paper-input">论文链接、文本或本地 PDF 路径</label><textarea id="paper-input" name="input" rows="6" placeholder="https://arxiv.org/abs/2501.12948&#10;https://huggingface.co/papers/2610.22740" required></textarea><div class="import-actions"><label class="check"><input type="checkbox" name="force">重新处理已有论文</label><button class="btn primary" type="submit">{{ icon('arrow-down-to-line') }}开始导入</button></div></form>
+    <form id="import-confirm-form" hidden aria-labelledby="import-confirm-title">
+      <fieldset class="import-confirm-fields">
+        <div class="import-review-head"><div><h2 id="import-confirm-title" tabindex="-1">确认导入</h2><p class="dim small-text" id="import-detected"></p></div><button class="btn ghost" type="button" data-import-back>{{ icon('arrow-left') }}<span>返回修改</span></button></div>
+        <div class="import-review-toolbar"><label class="check"><input id="import-select-all" type="checkbox" checked>全选</label><span class="dim small-text" id="import-selected" aria-live="polite"></span></div>
+        <ol class="import-review-list" id="import-candidates"></ol>
+        <div class="import-actions"><label class="check"><input type="checkbox" name="force">重新处理已有论文</label><button class="btn primary" type="submit">{{ icon('check') }}<span data-import-confirm-label>确认导入</span></button></div>
+      </fieldset>
+    </form>
+    <div id="import-progress" class="progress" role="status" aria-live="polite" hidden></div>
+  </div>
+  <aside class="import-sources"><h2>支持的来源</h2><div class="import-source"><span>{{ icon('file-text') }}arXiv</span><code>https://arxiv.org/abs/2501.12948</code></div><div class="import-source"><span>{{ icon('globe') }}Hugging Face Papers</span><code>https://huggingface.co/papers/2501.12948</code></div><div class="import-source"><span>{{ icon('link') }}PDF 链接</span><code>https://example.org/paper.pdf</code></div><div class="import-source"><span>{{ icon('folder') }}本地 PDF</span><code>D:\papers\attention.pdf</code></div></aside>
+</div>
+<template id="import-candidate-template">
+  <li class="import-candidate">
+    <input class="import-candidate-select" type="checkbox" data-import-select checked>
+    <div class="import-candidate-fields">
+      <div class="import-candidate-meta"><span class="badge" data-import-source></span><span class="dim small-text" data-import-state></span></div>
+      <div class="field-group"><label data-import-title-label>论文标题</label><textarea data-import-title rows="2" maxlength="1000" placeholder="待获取标题" spellcheck="false"></textarea></div>
+      <div class="field-group"><label data-import-link-label>链接或路径</label><div class="import-link-field"><textarea data-import-link rows="2" required autocomplete="off" spellcheck="false"></textarea><a class="icon-btn" data-import-open target="_blank" rel="noreferrer" title="打开论文来源" aria-label="打开论文来源">{{ icon('arrow-up-right') }}</a><button class="icon-btn" type="button" data-import-refresh title="重新获取标题" aria-label="重新获取标题">{{ icon('refresh-cw') }}</button></div></div>
+      <p class="form-error" data-import-error role="alert" hidden></p>
+      <a class="text-link" data-import-result hidden>已加入处理队列 {{ icon('arrow-up-right') }}</a>
+    </div>
+  </li>
+</template>
+<section class="recent-jobs"><h2>最近任务 <a href="/jobs">查看全部 {{ icon('arrow-right') }}</a></h2><div class="table-scroll"><table class="runs"><thead><tr><th>开始时间</th><th>论文</th><th>阶段</th><th>状态</th><th>详情</th></tr></thead><tbody>{% for j in recent %}<tr><td class="dim">{{ j.started_at[:19]|replace('T',' ') }}</td><td>{% if j.stage == 'motivation_tree' %}<a href="/relations?view=tree">全库 · 动机脉络</a>{% else %}<a href="/papers/{{ j.paper_id }}">{{ j.paper_id }}</a>{% endif %}</td><td>{{ stage_labels.get(j.stage,j.stage) }}</td><td><span class="status {{ j.status }}"><span class="dot {{ j.status }}"></span>{{ status_labels.get(j.status,j.status) }}</span></td><td class="dim">{{ j.error_detail[:80] or '—' }}</td></tr>{% else %}<tr><td colspan="5" class="dim">暂无导入任务</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}
+{% block scripts %}<script src="/static/import.js?v={{ static_v }}"></script>{% endblock %}

@@ -1,0 +1,418 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title_zh or paper.title or paper.id }} · Carrel{% endblock %}
+{% block styles %}<link rel="stylesheet" href="/static/graph.css?v={{ static_v }}"><link rel="stylesheet" href="/static/reader.css?v={{ static_v }}"><link rel="stylesheet" href="/static/sync.css?v={{ static_v }}">{% endblock %}
+{% block breadcrumb %}<a href="/">论文库</a><span class="breadcrumb-separator">/</span><span>论文阅读</span>{% endblock %}
+{% block content %}
+
+{% if paper.status == 'indexed' %}
+<div class="indexed-banner">{{ icon('file-check-2') }}<p>已收录论文，可选择处理深度生成笔记与译文。</p><button class="btn primary" data-process-indexed="{{ paper.id }}" title="选择处理深度">{{ icon('play') }}处理…</button></div>
+{% endif %}
+{% if paper.status not in ('ready', 'ready_with_warning', 'partial', 'failed', 'indexed') %}
+<div class="pipe-progress" id="pipe-progress"
+     data-paper="{{ paper.id }}" data-status="{{ paper.status }}">
+  <span class="pipe-title">处理中</span>
+  <span class="pipe-stage" data-stage="parsing">解析</span>
+  <span class="pipe-stage" data-stage="structuring">结构化</span>
+  <span class="pipe-stage" data-stage="translating">翻译</span>
+  <span class="pipe-stage" data-stage="classifying">分类</span>
+  <span class="pipe-stage" data-stage="relating">关联</span>
+  <span class="pipe-count" id="pipe-count"></span>
+  <button class="btn tiny" id="pipe-refresh" data-refresh hidden>{{ icon('refresh-cw') }}有新内容</button>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="banner error">
+  <strong>{{ error.code }}</strong> {{ error.detail }}
+</div>
+{% endif %}
+{% if paper.status in ('partial', 'ready_with_warning') %}
+<div class="banner warn">
+  {{ icon('circle-alert') }}{{ ('尚未完成：' ~ processing_missing|join('、') ~ '。已有内容可以继续阅读。') if paper.status == 'partial' else '论文已可阅读，部分引用关系尚未获取。' }}
+</div>
+{% endif %}
+
+<div class="detail-head">
+  <div>
+    <div class="crumb"><a href="/">{{ icon('arrow-left') }} 返回论文库</a>
+      {% if classification.get('categories') %}
+        {% for c in classification.categories %}
+          · {{ c.field or c.discipline }}
+        {% endfor %}
+      {% else %}
+        · {{ paper.field or paper.discipline or '未分类' }}
+      {% endif %}
+    </div>
+    <h1>{{ paper.title_zh or paper.title or paper.id }}</h1>
+    <details class="title-editor">
+      <summary class="dim small-text">{% if paper.title_pending %}{{ paper.title_notice }}{% else %}编辑中文标题{% endif %}</summary>
+      <form data-title-editor="{{ paper.id }}">
+        <label>中文标题<input name="title_zh" value="{{ paper.title_zh }}" placeholder="填写准确的中文标题" required></label>
+        <p class="dim small-text">手动保存后将保留你的标题；重新生成只处理标题。</p>
+        <div class="title-editor-actions">
+          <button class="btn tiny" type="submit">保存标题</button>
+          {% if not paper.title_zh %}<button class="btn tiny" type="button" data-title-retry>重新生成</button>{% endif %}
+        </div>
+        <p class="form-error" role="status" hidden></p>
+      </form>
+    </details>
+    <div class="processing-summary">
+      <span class="badge">{{ processing_profile.label }}</span>
+      {% if processing_profile.extract in ('none','key') %}
+      <button class="btn tiny" data-upgrade="notes" data-paper="{{ paper.id }}">升级到笔记 · 约 ${{ '%.3f'|format(processing_upgrades.notes.usd) }}</button>
+      {% endif %}
+      {% if not processing_profile.translate or processing_profile.extract in ('none','key') %}
+      <button class="btn tiny" data-upgrade="full" data-paper="{{ paper.id }}">升级到全文 · 约 ${{ '%.3f'|format(processing_upgrades.full.usd) }}</button>
+      {% endif %}
+      <button class="btn tiny ghost" data-upgrade="custom" data-paper="{{ paper.id }}">处理设置</button>
+    </div>
+    {% if paper.title_zh and paper.title %}<p class="orig">{{ paper.title }}</p>{% endif %}
+    <div class="paper-meta detail-meta">{% if paper.year %}<span>{{ paper.year }}</span>{% endif %}{% if paper.authors_display %}<span>{{ paper.authors_display }}</span>{% endif %}<span class="status {{ paper.status }}"><span class="dot {{ paper.status }}"></span>{{ status_labels.get(paper.status, paper.status) }}</span></div>
+  </div>
+  <div class="detail-actions"><button class="btn organize-shortcut" data-organize>{{ icon('tags') }}分类与关键词</button>{% if paper.source_url %}<a class="icon-btn" href="{{ paper.source_url }}" target="_blank" rel="noreferrer" title="论文来源" aria-label="论文来源">{{ icon('link') }}</a>{% endif %}</div>
+</div>
+
+<div class="tabs" role="tablist" aria-label="论文内容">
+  {% for key, label, glyph in [('summary','总结','align-left'),('pdf','阅读','book-open'),('rel','关系','network')] %}
+  <button class="tab {{ 'on' if key == 'summary' }}" id="tab-{{ key }}" role="tab" aria-controls="pane-{{ key }}" aria-selected="{{ 'true' if key == 'summary' else 'false' }}" tabindex="{{ '0' if key == 'summary' else '-1' }}" data-tab="{{ key }}">{{ icon(glyph) }}{{ label }}</button>
+  {% endfor %}
+</div>
+
+<!-- 总结 -->
+<section class="pane on" id="pane-summary" role="tabpanel" aria-labelledby="tab-summary" data-pane="summary">
+  <div class="cols">
+    <div class="main-col">
+      <div class="summary-intro"><h2>{{ icon('text-quote') }} 论文速览</h2>
+      <p class="lead">{{ summary.get('one_line') or (paper.abstract if paper.status == 'indexed' else '') or '摘要尚未生成' }}</p></div>
+
+      {% if notes is defined %}<section class="human-notes" id="human-notes" data-paper="{{ paper.id }}" aria-labelledby="notes-heading">
+        <div class="human-notes-heading"><h2 id="notes-heading">{{ icon('notebook-pen') }} 我的笔记</h2><span class="badge">人工</span><button class="icon-btn small" id="note-add" type="button" title="添加笔记" aria-label="添加笔记">{{ icon('plus') }}</button></div>
+        <div id="notes-list"></div>
+        <script type="application/json" id="notes-data">{{ notes|tojson }}</script>
+      </section>{% endif %}
+
+      {% if summary.get('contributions') %}
+      <h2>核心贡献</h2>
+      <ul>{% for c in summary.contributions %}<li>{{ c }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      {% if motivation and motivation.get('motivation') %}
+      <details class="assessment motivation-card" open>
+        <summary>研究动机 <span class="badge">模型判断</span>{{ icon('chevron-down') }}</summary>
+        <p class="lead">{{ motivation.motivation }}</p>
+        {% if motivation.gap %}<p><span class="dim">前人不足</span>　{{ motivation.gap }}</p>{% endif %}
+        {% if motivation.direction %}<p><span class="dim">研究方向</span>　{{ motivation.direction }}</p>{% endif %}
+        {% if motivation.keywords %}<p class="tags-inline">{% for keyword in motivation.keywords %}<span class="chip">{{ keyword }}</span>{% endfor %}</p>{% endif %}
+        <p class="dim">依据论文引言与总结{% if motivation.evidence_block_ids %} · {{ motivation.evidence_block_ids|length }} 处原文{% endif %}
+          {% if motivation.run_id %} · <a class="link" href="/runs/{{ motivation.run_id }}">查看抽取过程</a>{% endif %}</p>
+        {% if motivation_neighbors.upstream or motivation_neighbors.downstream %}<a class="text-link motivation-tree-link" href="/relations?view=tree&focus={{ paper.id|urlencode }}#tree">{{ icon('git-branch') }}查看研究脉络</a>{% endif %}
+      </details>
+      {% endif %}
+
+      {% if assessment %}
+      <details class="assessment"><summary>模型评估 <span class="badge">模型判断</span>{{ icon('chevron-down') }}</summary>
+      {% set v = assessment.get('value') or {} %}
+      <p><strong>阅读优先级</strong>：{{ {'high':'高','medium':'中','low':'低'}.get(v.get('read_priority'), v.get('read_priority') or '-') }}</p>
+      {% if v.get('novelty') %}<p><span class="dim">新颖性</span>　{{ v.novelty }}</p>{% endif %}
+      {% if v.get('evidence_strength') %}<p><span class="dim">证据强度</span>　{{ v.evidence_strength }}</p>{% endif %}
+      {% if v.get('reproducibility') %}<p><span class="dim">可复现性</span>　{{ v.reproducibility }}</p>{% endif %}
+      {% if v.get('why') %}<p class="dim">{{ v.why }}</p>{% endif %}
+      {% if assessment.get('caveats') %}
+      <p class="dim">注意：{{ assessment.caveats|join('；') }}</p>
+      {% endif %}
+      {% if assessment.get('run_id') %}
+      <p><a class="link" href="/runs/{{ assessment.run_id }}">查看判断依据</a></p>
+      {% endif %}
+      </details>
+      {% endif %}
+
+    </div>
+
+    <aside class="side-col">
+      <details class="organize-section chapter-notes"><summary>章节笔记 <span class="count">{{ chapter_notes|length }}</span></summary>
+      {% for module in chapter_notes %}<details><summary>{{ module.title_original }}</summary><p data-math>{{ module.digest }}</p>{% if module.points %}<ul>{% for point in module.points %}<li data-math>{{ point.text }}</li>{% endfor %}</ul>{% endif %}</details>{% endfor %}
+      {% if processing_profile.extract in ('none','key') %}<p class="dim small-text">{{ '尚未生成章节笔记' if processing_profile.extract == 'none' else '当前只处理摘要、引言与结论' }} · <button class="btn tiny" data-upgrade="notes" data-paper="{{ paper.id }}">升级到笔记</button></p>{% endif %}
+      </details>
+      {% if paper_collections %}<section class="organize-section"><div class="section-label">阅读集合</div><div class="paper-collections">{% for c in paper_collections %}<a class="chip" href="/?collection={{ c.id|urlencode }}">{{ c.name }}</a>{% endfor %}</div></section>{% endif %}
+      <section class="organize-section">
+        <div class="section-label">分类 <button class="icon-btn small" data-add-category title="添加分类" aria-label="添加分类">{{ icon('plus') }}</button></div>
+        <div class="cats-edit" id="cats-edit" data-paper="{{ paper.id }}" data-count="{{ classification.get('categories', [])|length }}">
+          {% if classification.get('categories') %}
+            {% for c in classification.categories %}
+            {% set leaf = c.field or c.discipline %}
+            <div class="cat-line" data-index="{{ loop.index0 }}" data-discipline="{{ c.discipline }}" data-field="{{ c.field or '' }}"><a href="/?discipline={{ c.discipline|urlencode }}&field={{ (c.field or '')|urlencode }}" title="{{ c.discipline }}{% if c.field %} / {{ c.field }}{% endif %}">{{ icon('folder') }}<span>{{ leaf }}<small>{{ c.discipline }}</small></span></a><button class="icon-btn small" data-edit-category title="编辑分类" aria-label="编辑分类 {{ leaf }}">{{ icon('pencil') }}</button></div>
+            {% endfor %}
+          {% else %}
+            {% set leaf0 = paper.field or paper.discipline or '未分类' %}
+            <div class="cat-line" data-index="0" data-discipline="{{ paper.discipline or '' }}" data-field="{{ paper.field or '' }}"><span>{{ leaf0 }}</span><button class="icon-btn small" data-edit-category title="编辑分类" aria-label="编辑分类">{{ icon('pencil') }}</button></div>
+          {% endif %}
+        </div>
+      </section>
+      <section class="organize-section">
+        <div class="section-label">关键词 <span class="count" id="tag-count">{{ classification.get('tags', [])|length }}</span></div>
+        <div class="tags editable-tags" id="tag-editor" data-paper="{{ paper.id }}">
+          {% for t in classification.get('tags', []) %}
+          <span class="tag editable-tag" data-tag="{{ t.tag }}" data-origin="{{ t.origin }}" data-evidence="{{ t.evidence }}" data-source-block="{{ t.source_block }}"><a href="/?tag={{ t.tag|urlencode }}" title="{{ '手工关键词' if t.origin == 'human' else '模型关键词' }}{% if t.evidence %} · {{ t.evidence }}{% endif %}">{{ t.tag }}</a><button type="button" class="tag-action" data-edit-tag aria-label="编辑关键词 {{ t.tag }}" title="编辑关键词">{{ icon('pencil') }}</button><button type="button" class="tag-action" data-remove="{{ t.tag }}" aria-label="移除关键词 {{ t.tag }}" title="移除关键词">{{ icon('x') }}</button></span>
+          {% endfor %}
+        </div>
+        <p class="dim small-text" id="tags-empty" {{ 'hidden' if classification.get('tags') }}>暂无关键词</p>
+        <form class="tag-add" id="tag-add-form">
+          <label class="sr-only" for="new-tag">新关键词</label><input id="new-tag" type="text" name="tag" placeholder="添加关键词…" maxlength="24" required list="tag-suggestions" autocomplete="off"><button class="icon-btn" type="submit" aria-label="添加关键词" title="添加关键词">{{ icon('plus') }}</button>
+        </form>
+        <p class="form-error" id="tag-add-error" role="alert" hidden></p>
+        <datalist id="tag-suggestions">{% for t in all_tags %}<option value="{{ t.tag }}">{% endfor %}</datalist>
+      </section>
+      {% if glossary.get('terms') %}<details class="organize-section glossary-details"><summary>术语表 {{ icon('chevron-down') }}</summary><ul class="glossary">{% for term in glossary.terms %}{% if term is mapping %}<li><strong>{{ term.get('src') or term.get('source') or term.get('term') or term.get('en') }}</strong><span>{{ '保留原文' if term.get('keep_original') else (term.get('target') or term.get('translation') or term.get('zh') or '') }}</span></li>{% endif %}{% endfor %}</ul></details>{% endif %}
+    </aside>
+  </div>
+</section>
+
+<!-- 原文（内嵌 PDF + 对照译文；可批注，自动保存） -->
+<section class="pane reader" id="pane-pdf" role="tabpanel" aria-labelledby="tab-pdf" data-pane="pdf"
+         data-reader data-reader-open="{{ 'true' if article else 'false' }}" data-reader-mode="split"
+         data-reader-link="true">
+  {% if not article and not processing_profile.translate %}
+  <div class="readiness-banner"><span>未翻译 · 当前处理深度仅生成阅读笔记。</span><button class="btn tiny" data-upgrade="full" data-paper="{{ paper.id }}">升级到全文</button></div>
+  {% elif not article and processing_profile.translate %}
+  <p class="dim">译文尚未完成，可在处理记录中查看进度。</p>
+  {% endif %}
+  {% if has_pdf %}
+  <div class="pdf-tools">
+    <div class="segmented" aria-label="PDF 工具">{% for key, label, glyph in [('pointer','浏览','mouse-pointer-2'),('pen','画笔','pencil'),('highlight','荧光笔','highlighter'),('eraser','橡皮','eraser')] %}<button class="icon-btn {{ 'on' if key == 'pointer' }}" id="tool-{{ key }}" title="{{ label }}" aria-label="{{ label }}" aria-pressed="{{ 'true' if key == 'pointer' else 'false' }}">{{ icon(glyph) }}</button>{% endfor %}</div>
+    <button class="icon-btn" id="tool-clear-page" title="清除当前页批注" aria-label="清除当前页批注">{{ icon('trash-2') }}</button>
+    {% if article %}
+    <div class="reader-tools" role="group" aria-label="对照阅读">
+      <button class="icon-btn reader-toggle {{ 'on' if article }}" id="cmp-toggle" type="button" data-cmp-toggle title="显示对照译文" aria-label="显示对照译文" aria-pressed="true">{{ icon('languages') }}</button>
+      <div class="segmented" id="cmp-mode" role="group" aria-label="对照位置">
+        <button class="icon-btn" type="button" data-cmp-mode="float" title="悬浮" aria-label="对照悬浮在原文上方" aria-pressed="false">{{ icon('picture-in-picture-2') }}</button>
+        <button class="icon-btn on" type="button" data-cmp-mode="split" title="左右" aria-label="原文与对照左右分栏" aria-pressed="true">{{ icon('columns-2') }}</button>
+        <button class="icon-btn" type="button" data-cmp-mode="stack" title="上下" aria-label="原文与对照上下排列" aria-pressed="false">{{ icon('rows-2') }}</button>
+      </div>
+      <button class="icon-btn {{ 'on' if article }}" id="cmp-sync" type="button" data-cmp-sync data-on="true" title="联动滚动" aria-label="联动滚动" aria-pressed="true">{{ icon('link-2') }}</button>
+    </div>
+    {% endif %}
+    <div class="pdf-pagination"><button class="icon-btn" id="pdf-prev" title="上一页" aria-label="上一页">{{ icon('chevron-left') }}</button><input type="number" min="1" value="1" id="pdf-page-input" aria-label="PDF 页码"><span id="pdf-total">/ -</span><button class="icon-btn" id="pdf-next" title="下一页" aria-label="下一页">{{ icon('chevron-right') }}</button></div>
+    <button class="icon-btn reader-fullscreen" type="button" data-reader-fullscreen title="全屏阅读" aria-label="全屏阅读" aria-pressed="false">{{ icon('maximize', 'enter-fullscreen') }}{{ icon('minimize', 'exit-fullscreen') }}</button>
+  </div>
+  <div class="reader-body">
+    <div class="pdf-stage">
+      <div id="pdf-viewer" data-paper="{{ paper.id }}" data-tool="pointer">
+        <p class="dim">正在加载 PDF…</p>
+      </div>
+      {% if article %}
+      <aside class="cmp-panel" id="cmp-panel" aria-label="对照译文">
+        <div class="cmp-head" data-cmp-drag>
+          <button class="icon-btn small" id="toc-toggle" type="button" title="展开章节目录" aria-label="展开章节目录" aria-expanded="false" aria-controls="toc-links">{{ icon('list-tree') }}</button>
+          <span class="cmp-title">译文</span>
+          <span class="cmp-page" data-cmp-page>原文 1 页</span>
+          <button class="icon-btn small" type="button" data-cmp-source title="显示原文段落" aria-label="显示原文段落" aria-pressed="false">{{ icon('text-quote') }}</button>
+          <button class="icon-btn small" type="button" data-cmp-reset title="复位浮窗" aria-label="复位浮窗">{{ icon('rotate-ccw') }}</button>
+          <button class="icon-btn small" type="button" data-cmp-close title="关闭对照" aria-label="关闭对照">{{ icon('x') }}</button>
+        </div>
+        <nav class="article-toc" aria-label="章节目录" hidden><div class="toc-head"><span class="section-label">章节目录</span></div><div id="toc-links" hidden>{% for mod in article %}<a href="#section-{{ loop.index }}" data-section="section-{{ loop.index }}" data-math>{{ mod.title }}</a>{% endfor %}</div></nav>
+        <div class="translation-layout" id="translation-layout" tabindex="0" aria-label="译文正文">
+          <article class="translation-article" data-math>
+            {% for mod in article %}
+            <section class="trans-section" id="section-{{ loop.index }}" data-page-start="{{ mod.page_start or '' }}">
+              <h2>{{ mod.title }}</h2>
+              {% for p in mod.paragraphs %}
+                {% set pages = (p.pages or ([p.page] if p.page else []))|join(' ') %}
+                <div class="cmp-row {{ 'cmp-formula' if p.type == 'formula' }} {{ 'untranslated' if p.untranslated }}" data-block-ids="{{ p.block_ids|join(' ') }}" data-pages="{{ pages }}">
+                  <div class="cmp-row-meta">{% if p.page %}<a class="pgref" href="#pdf" data-page="{{ p.page }}" title="查看原文第 {{ p.page }} 页">{{ icon('file-text') }}{{ p.page }}{% if p.pages and p.pages[-1] != p.page %}–{{ p.pages[-1] }}{% endif %} 页 {{ icon('arrow-up-right') }}</a>{% endif %}{% if p.untranslated %}<span class="cmp-missing">未翻译</span>{% endif %}</div>
+                {% if p.type == 'formula' %}
+                    <div class="formula-line {{ 'review' if p.needs_review }}" data-math-display id="{{ p.id }}">{{ p.text }}</div>
+                {% elif p.type in ('caption', 'table', 'figure') %}
+                    <p class="caption-line cmp-src" id="src-{{ p.id }}">{{ p.source }}</p>
+                    {% if not p.untranslated %}<p class="caption-line cmp-dst {{ 'review' if p.needs_review }}" id="{{ p.id }}">{{ p.text }}</p>{% endif %}
+                {% else %}
+                    <div class="cmp-src">{% for part in p.src_parts %}<span data-src-part>{{ part }}</span>{% endfor %}</div>
+                    <p class="trans-para cmp-dst {{ 'review' if p.needs_review }}" id="{{ p.id }}">{% for part in p.parts %}<span data-math-part>{{ part }}</span>{% endfor %}</p>
+                {% endif %}
+                </div>
+              {% endfor %}
+            </section>
+            {% endfor %}
+            {% if untranslated_sections %}
+            <details class="cmp-untranslated">
+              <summary>未翻译的章节（{{ untranslated_sections|length }}）</summary>
+              <ul>{% for s in untranslated_sections %}<li><span>{{ s.title }}</span>{% if s.page_start %}<a class="pgref" href="#pdf" data-page="{{ s.page_start }}" title="查看原文第 {{ s.page_start }} 页">{{ s.page_start }}{% if s.page_end and s.page_end != s.page_start %}–{{ s.page_end }}{% endif %} 页 {{ icon('arrow-up-right') }}</a>{% endif %}</li>{% endfor %}</ul>
+            </details>
+            {% endif %}
+          </article>
+        </div>
+        <p class="dim small-text cmp-empty" data-cmp-empty hidden>本页没有对应译文</p>
+      </aside>
+      {% endif %}
+    </div>
+  </div>
+  <div class="reader-status"><span class="dim" id="anno-status" role="status">批注已就绪</span></div>
+  {% else %}<div class="empty">{{ icon('file-clock') }}<h2>原文尚未就绪</h2><p>{{ 'PDF 处理失败，请查看错误记录。' if paper.status == 'failed' else '论文处理完成后，原文会显示在这里。' }}</p></div>{% endif %}
+</section>
+
+<!-- 关系 -->
+<section class="pane" id="pane-rel" role="tabpanel" aria-labelledby="tab-rel" data-pane="rel">
+  <section class="graph-workspace graph-embed" data-graph-scope="paper" data-graph-lazy="true"
+           data-endpoint="/api/papers/{{ paper.id|urlencode }}/graph"
+           data-max-papers="{{ graph_max_papers }}" data-revision="{{ paper_graph.revision }}"
+           data-paper="{{ paper.id }}">
+    <div class="graph-toolbar">
+      <span class="section-label">本论文的局部图</span>
+      <div class="graph-tools">
+        <label class="graph-show-count" for="graph-max-papers">论文上限
+          <select id="graph-max-papers" data-graph-max-papers aria-label="论文上限（含当前论文）">
+            {% for option in graph_options %}<option value="{{ option }}" {{ 'selected' if option == graph_max_papers }}>{{ option }} 篇（含本篇）</option>{% endfor %}
+          </select>
+        </label>
+        <div class="graph-menu" data-graph-menu="layers">
+          <button class="icon-btn" type="button" data-graph-menu-toggle="layers" title="图层" aria-label="图层" aria-expanded="false" aria-haspopup="true">{{ icon('layers') }}</button>
+          <div class="graph-popover" data-graph-popover="layers" hidden>
+            <p class="section-label">图层</p>
+            <label class="graph-check"><input type="checkbox" data-layer="category" checked><span class="graph-key category" aria-hidden="true"></span>分类</label>
+            <label class="graph-check"><input type="checkbox" data-layer="tag" checked><span class="graph-key tag" aria-hidden="true"></span>关键词</label>
+            <label class="graph-check"><input type="checkbox" data-layer="paper" checked><span class="graph-key paper" aria-hidden="true"></span>库内论文</label>
+            <label class="graph-check"><input type="checkbox" data-layer="external" checked><span class="graph-key external" aria-hidden="true"></span>外部文献</label>
+            <label class="graph-check"><input type="checkbox" data-layer="cites" checked><span class="graph-key cites" aria-hidden="true"></span>引用</label>
+            <label class="graph-check"><input type="checkbox" data-layer="similar" checked><span class="graph-key similar" aria-hidden="true"></span>相似</label>
+            <label class="graph-check graph-evidence"><input type="checkbox" data-graph-evidence>全部关联依据</label>
+          </div>
+        </div>
+        <button class="icon-btn" type="button" data-graph-fit title="适配可见节点" aria-label="适配可见节点">{{ icon('scan') }}</button>
+        <div class="graph-zoom">
+          <button class="icon-btn" type="button" data-graph-zoom="out" title="缩小" aria-label="缩小">{{ icon('minus') }}</button>
+          <output class="graph-zoom-value" data-graph-zoom-value aria-live="off">100%</output>
+          <button class="icon-btn" type="button" data-graph-zoom="in" title="放大" aria-label="放大">{{ icon('plus') }}</button>
+        </div>
+        <button class="icon-btn" type="button" data-graph-fullscreen title="全屏" aria-label="全屏查看图谱" aria-pressed="false">{{ icon('maximize') }}</button>
+      </div>
+    </div>
+    <div class="graph-body">
+      <div class="graph-stage">
+        <svg class="graph-canvas" data-graph-canvas role="application"
+             aria-label="本论文的局部关系图，使用方向键在相邻节点间移动，回车查看详情" tabindex="0"></svg>
+        <p class="graph-status" data-graph-status role="status" aria-live="polite">切换到本页签后加载图谱</p>
+      </div>
+      <aside class="graph-detail" data-graph-detail hidden aria-label="选中项详情">
+        <div class="graph-detail-head">
+          <h2 data-graph-detail-title>详情</h2>
+          <button class="icon-btn small" type="button" data-graph-detail-close title="关闭详情" aria-label="关闭详情">{{ icon('x') }}</button>
+        </div>
+        <div class="graph-detail-body" data-graph-detail-body></div>
+      </aside>
+    </div>
+    <div class="graph-legend" data-graph-legend>
+      <span data-legend-node="category" hidden><i class="graph-key category" aria-hidden="true"></i>分类</span>
+      <span data-legend-node="paper" hidden><i class="graph-key paper" aria-hidden="true"></i>库内论文</span>
+      <span data-legend-node="tag" hidden><i class="graph-key tag" aria-hidden="true"></i>关键词</span>
+      <span data-legend-node="external" hidden><i class="graph-key external" aria-hidden="true"></i>外部文献</span>
+      <span data-legend-edge="membership" hidden><i class="graph-key edge membership" aria-hidden="true"></i>分类归属</span>
+      <span data-legend-edge="tag" hidden><i class="graph-key edge tag" aria-hidden="true"></i>关键词关联</span>
+      <span data-legend-edge="cites" hidden><i class="graph-key cites" aria-hidden="true"></i>引用</span>
+      <span data-legend-edge="similar" hidden><i class="graph-key similar" aria-hidden="true"></i>相似</span>
+      <span class="graph-legend-count" data-graph-count></span>
+    </div>
+    <details class="graph-nodes">
+      <summary>可访问节点列表</summary>
+      <div data-graph-node-list></div>
+    </details>
+  </section>
+  <script type="application/json" data-graph-payload>{{ paper_graph.to_dict()|tojson }}</script>
+  {% set cov = relations.get('coverage') or {} %}
+  {% set errs = relations.get('errors') or {} %}
+  {% set relation_preview_count = 5 %}
+  {% for kind, label in [('cites','参考文献'), ('similar','相似论文')] %}
+  {% set items = relations.get(kind) or [] %}
+  <section class="rel-block" data-relation-kind="{{ kind }}">
+    <h2>{{ label }} <span class="dim">{{ items|length }} 条</span></h2>
+    {% if cov.get(kind) in ('failed', 'unavailable') %}
+    <div class="banner warn rel-hint">
+      {% if 'rate_limited' in (errs.get('resolve') or errs.get(kind) or '') %}
+        OpenAlex 限流：你的网络出口 IP 的免费共享额度已被用光（校园网常见）。
+        处理办法：到 <a href="https://openalex.org/users/me" target="_blank" rel="noreferrer">openalex.org/users/me</a>
+        用邮箱免费注册一个 API key，填到 <code>config/local.toml</code> 的 <code>[openalex] api_key</code>，
+        重新处理论文后更新引用关系。
+      {% elif errs.get(kind) == 'unavailable' or kind == 'similar' %}
+        Sciverse 未配置 token，相似论文暂不可用。想启用的话：在 <code>config/local.toml</code>
+        的 <code>[sciverse] token</code> 填入 API Key 并重启。
+      {% else %}
+        该来源暂时不可用（{{ errs.get(kind) or errs.get('resolve') or '网络错误' }}），已有内容可以继续阅读。
+      {% endif %}
+    </div>
+    {% endif %}
+    <ul class="rel-list" id="relations-{{ kind }}" data-math>
+      {% for r in items %}
+      <li{% if loop.index > relation_preview_count %} data-relation-extra hidden{% endif %}>
+        {% if r.url %}
+          <a class="relation-title" href="{{ r.url }}" {% if not r.internal %}target="_blank" rel="noreferrer"{% endif %}>{{ r.label }}{% if r.search_link %}<span class="relation-search">{{ icon('search') }}按标题检索</span>{% endif %}</a>
+          {% if r.dst_year %}<span class="dim">{{ r.dst_year }}</span>{% endif %}
+        {% else %}
+          <span>{{ r.label }}</span>
+        {% endif %}
+        <span class="prov">{{ r.provider }}</span>
+      </li>
+      {% else %}
+      <li class="dim">暂无{{ label }}</li>
+      {% endfor %}
+    </ul>
+    {% if items|length > relation_preview_count %}
+    <button class="text-link rel-toggle" type="button" data-relation-toggle
+            aria-controls="relations-{{ kind }}" aria-expanded="false"
+            aria-label="more：展开其余 {{ items|length - relation_preview_count }} 条{{ label }}"
+            data-expand-label="more：展开其余 {{ items|length - relation_preview_count }} 条{{ label }}"
+            data-collapse-label="less：收起{{ label }}，仅显示前 {{ relation_preview_count }} 条">
+      {{ icon('chevron-down') }}<span data-relation-toggle-label>more</span><span class="rel-toggle-count">+{{ items|length - relation_preview_count }}</span>
+    </button>
+    {% endif %}
+  </section>
+  {% endfor %}
+</section>
+
+<!-- 模型调用记录（默认折叠） -->
+<details class="panel wide runs-details">
+  <summary>模型调用记录（{{ runs|length }} 次）</summary>
+  <div class="table-scroll">
+  <table class="runs">
+    <thead><tr><th>时间</th><th>任务</th><th>提供方</th><th>模块</th><th>状态</th><th>tokens</th><th>耗时</th><th></th></tr></thead>
+    <tbody>
+      {% for r in runs[:60] %}
+      <tr>
+        <td class="dim">{{ r.created_at }}</td>
+        <td>{{ r.task }}</td>
+        <td>{{ r.provider or 'legacy' }}</td>
+        <td>{{ r.module }}</td>
+        <td class="{{ 'bad' if r.status not in ('ok','retry') else '' }}">{{ r.status }}{% if not r.qa_ok %} · 需复核{% endif %}</td>
+        <td>{{ r.tokens_in }}/{{ r.tokens_out }}</td>
+        <td>{{ r.duration_ms }}ms</td>
+        <td><a class="link" href="/runs/{{ r.id }}">详情</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="dim">暂无记录</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+
+<dialog id="tag-dialog" class="edit-dialog" aria-labelledby="tag-dialog-title">
+  <form id="tag-edit-form"><div class="dialog-head"><h2 id="tag-dialog-title">编辑关键词</h2><button type="button" class="icon-btn" data-close-dialog aria-label="关闭" title="关闭">{{ icon('x') }}</button></div><label for="tag-name">关键词名称</label><input id="tag-name" name="tag" required maxlength="24" autocomplete="off"><p class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" class="btn" data-close-dialog>取消</button><button class="btn primary" type="submit">{{ icon('check') }}保存修改</button></div></form>
+</dialog>
+<dialog id="note-dialog" class="edit-dialog" aria-labelledby="note-dialog-title">
+  <form id="note-add-form"><div class="dialog-head"><h2 id="note-dialog-title">添加笔记</h2><button type="button" class="icon-btn" data-close-dialog title="关闭" aria-label="关闭">{{ icon('x') }}</button></div>
+    <label for="note-collection">所属集合</label><select id="note-collection" name="collection_id"></select>
+    <label for="note-priority">阅读优先级</label><input id="note-priority" name="priority" list="note-priorities" maxlength="100" placeholder="P0、P1、P2 或自定义">
+    <label for="note-body">笔记</label><textarea id="note-body" name="body" rows="7" maxlength="100000"></textarea>
+    <p class="form-error" role="alert" hidden></p><div class="dialog-actions"><button class="btn" type="button" data-close-dialog>取消</button><button class="btn primary" type="submit">{{ icon('check') }}保存笔记</button></div>
+  </form>
+</dialog>
+<datalist id="note-priorities"><option value="P0"><option value="P1"><option value="P2"></datalist>
+<dialog id="category-dialog" class="edit-dialog" aria-labelledby="category-dialog-title">
+  <form id="category-edit-form"><div class="dialog-head"><h2 id="category-dialog-title">编辑分类</h2><button type="button" class="icon-btn" data-close-dialog aria-label="关闭" title="关闭">{{ icon('x') }}</button></div><label for="cat-discipline">研究方向</label><input id="cat-discipline" name="discipline" required maxlength="80" list="discipline-options"><label for="cat-field">具体主题</label><input id="cat-field" name="field" maxlength="80" list="field-options"><p class="form-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" class="icon-btn category-remove" id="category-remove" aria-label="移除此分类" title="移除此分类">{{ icon('trash-2') }}</button><button type="button" class="btn" data-close-dialog>取消</button><button class="btn primary" type="submit">{{ icon('check') }}保存修改</button></div></form>
+</dialog>
+<datalist id="discipline-options"></datalist><datalist id="field-options"></datalist>
+<script type="application/json" id="taxonomy-data">{{ taxonomy_paths|tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/notes.js?v={{ static_v }}"></script>
+<script src="/static/graph-layout-loader.js?v={{ static_v }}"></script>
+<script src="/static/reader.js?v={{ static_v }}"></script>
+<script src="/static/graph.js?v={{ static_v }}"></script>
+{% endblock %}

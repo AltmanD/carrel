@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}论文关系 · Carrel{% endblock %}
+{% block styles %}<link rel="stylesheet" href="/static/graph.css?v={{ static_v }}"><link rel="stylesheet" href="/static/graph-explorer.css?v={{ static_v }}">{% endblock %}
+{% block content %}
+<section data-graph-explorer data-preference-key="{{ library_key|default('local') }}">
+<header class="page-head"><div><p class="eyebrow">资料库中的联系</p><h1>论文关系</h1><p>从研究方向与阅读主题开始，逐步查看论文和关联。</p></div><nav class="segmented" aria-label="视图切换"><button class="btn" data-view="graph">论文关系</button><button class="btn" data-view="tree">动机脉络</button></nav></header>
+<form class="explorer-controls" data-explorer-form role="search">
+<label>分组<select name="group_by"><option value="category">按分类</option><option value="collection">按阅读集合</option></select></label>
+<label>搜索全部范围<input type="search" name="q" placeholder="方法名、完整标题、关键词"></label>
+<label>排序<select name="sort"><option value="recent">最近收录</option><option value="name">方法名</option><option value="depth">处理深度</option></select></label>
+<button class="btn" type="submit">搜索</button><button class="btn" type="button" data-reset>恢复默认</button>
+<details class="explorer-filter-panel"><summary>分类、集合与关键词筛选</summary><div class="explorer-facets" data-facets></div><label>关键词匹配<select name="keywords_match"><option value="any">任一关键词</option><option value="all">全部关键词</option></select></label><p>同一维度多选取并集；分类、集合与关键词之间取交集。</p></details>
+</form>
+<div class="explorer-chips" data-chips aria-label="已选条件"></div>
+<div class="explorer-toolbar"><button class="btn" data-back hidden>返回分组概况</button><button class="btn" data-refresh>刷新快照</button><button class="btn" data-print>打印 / 导出概况</button><label data-empty-toggle><input type="checkbox" data-empty>显示空集合</label><span data-snapshot></span></div>
+<p data-feedback role="status" aria-live="polite">正在加载概况…</p><button class="btn" data-retry hidden>重试</button>
+<p data-summary></p><div data-notes></div>
+<div class="explorer-cards" data-cards></div>
+<div data-local hidden>
+<form class="explorer-toolbar explorer-branch-label" data-branch-label-form hidden><label>主线名称<input data-branch-label name="label" maxlength="60" placeholder="主线名称（最多 60 字）"></label><button class="btn" type="submit">保存主线名称</button><span data-branch-label-feedback role="status"></span></form>
+<div class="explorer-toolbar"><label data-neighbor-control hidden>相关论文<select data-neighbor-limit><option value="5">最多 5 篇</option><option value="10">最多 10 篇</option><option value="20">最多 20 篇</option></select></label><span data-group-edges hidden><label><input type="checkbox" data-cites>显示组内引用</label><label>连线上限<select data-edge-limit><option value="40">40 条</option><option value="80">80 条</option><option value="160">160 条</option></select></label></span><label><input type="checkbox" data-similar>包含相似关系</label><label data-context-control hidden><input type="checkbox" data-context>显示范围外前驱上下文</label></div>
+<div class="graph-workspace" data-renderer data-graph-started="true">
+<div class="graph-toolbar"><button class="btn tiny" data-graph-home>阅读视角</button><button class="btn tiny" data-graph-fit>全览当前已展开内容</button><button class="btn tiny" data-graph-zoom="out" aria-label="缩小">−</button><output data-graph-zoom-value>100%</output><button class="btn tiny" data-graph-zoom="in" aria-label="放大">+</button><button class="btn tiny" data-graph-export="svg" data-export-scope="all">SVG · 已展开</button><button class="btn tiny" data-graph-export="png" data-export-scope="all">PNG · 已展开</button><button class="btn tiny" data-graph-export="png" data-export-scope="viewport">PNG · 当前视口</button></div>
+<div class="graph-body"><div class="graph-stage"><svg class="graph-canvas" data-graph-canvas tabindex="0" role="application" aria-label="论文图，方向键移动，回车选择论文"></svg><p class="graph-status" data-graph-status role="status"></p></div></div>
+<details class="graph-nodes"><summary>可访问论文列表（<span data-graph-node-total>0</span>）</summary><div data-graph-node-list></div></details>
+</div><p>点击论文查看关联。引用箭头由引用者指向被引用者；相似关系为虚线。导出仅包含当前已展开内容。</p><div data-boundary></div><button class="btn" data-more hidden>展开更多</button>
+</div>
+<aside class="explorer-detail" data-detail hidden aria-label="论文详情"><button class="btn" data-detail-close>关闭详情</button><div data-detail-body></div></aside>
+<noscript>请启用 JavaScript 以浏览分组与论文关系。</noscript>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/graph-layout-loader.js?v={{ static_v }}"></script><script src="/static/graph.js?v={{ static_v }}"></script><script src="/static/graph-explorer.js?v={{ static_v }}"></script>{% endblock %}

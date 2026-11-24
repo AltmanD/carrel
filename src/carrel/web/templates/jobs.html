@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}任务 · Carrel{% endblock %}
+{% block content %}
+<header class="page-head"><div><p class="eyebrow">处理记录</p><h1>处理任务</h1><p class="page-meta">最近 {{ jobs|length }} 条任务记录</p></div><button class="btn" data-refresh>{{ icon('refresh-cw') }}刷新状态</button></header>
+<section class="batch-dashboard" data-batch-dashboard aria-label="批量导入进度" aria-live="polite">
+  <div class="batch-heading"><div><h2>批量导入</h2><p class="dim" data-batch-caption>正在读取批次进度…</p></div><span class="batch-total" data-batch-total></span></div>
+  <div data-batch-list></div>
+  <div class="batch-stages" data-batch-stages></div>
+  <details class="batch-resources"><summary>服务负载与自动重试</summary><p class="dim">连接暂时中断时会等待恢复。退避期间会释放请求名额，其他服务仍可继续处理。</p><div data-batch-resources></div><p data-batch-quota></p><div data-batch-retries></div></details>
+</section>
+<script defer src="/static/jobs.js?v={{ static_v }}"></script>
+<details class="job-history"><summary>逐项任务记录 · {{ jobs|length }} 条</summary>
+<div class="table-scroll">
+<table class="runs">
+  <thead><tr><th>开始</th><th>结束</th><th>论文</th><th>阶段</th><th>状态</th><th>错误码</th><th>说明</th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr>
+      <td class="dim">{{ j.started_at[:19]|replace('T',' ') }}</td>
+      <td class="dim">{{ j.finished_at[:19]|replace('T',' ') }}</td>
+      <td>{% if j.stage == 'motivation_tree' %}<a href="/relations?view=tree">全库 · 动机脉络</a>{% else %}<a href="/papers/{{ j.paper_id }}">{{ papers.get(j.paper_id, {}).get('title') or j.paper_id }}</a>{% endif %}</td>
+      <td>{{ stage_labels.get(j.stage,j.stage) }}</td>
+      <td><span class="status {{ j.status }}"><span class="dot {{ j.status }}"></span>{{ status_labels.get(j.status,j.status) }}</span></td>
+      <td><code>{{ j.error_code }}</code></td>
+      <td class="dim">{{ j.error_detail[:120] }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="dim">暂无任务</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</details>
+{% endblock %}

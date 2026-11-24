@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}本地目录 · Carrel{% endblock %}
+{% block styles %}<link rel="stylesheet" href="/static/sync.css?v={{ static_v }}">{% endblock %}
+{% block breadcrumb %}<a href="/import">导入论文</a><span>/</span><span>本地目录</span>{% endblock %}
+{% block content %}
+<header class="page-head"><div><p class="eyebrow">添加到资料库</p><h1>导入论文</h1></div><a class="btn" href="/collections">{{ icon('folders') }}阅读集合</a></header>
+<nav class="import-modes" aria-label="导入方式"><a href="/import">{{ icon('link') }}论文链接 / PDF</a><a class="on" href="/sync" aria-current="page">{{ icon('folder-input') }}本地目录</a></nav>
+<form id="sync-scan-form" class="sync-path-form">
+  <label for="sync-root">本地论文目录</label>
+  <div class="sync-path-row"><input id="sync-root" name="root" required placeholder="D:\papers" autocomplete="off" spellcheck="false"><button class="btn primary" type="submit">{{ icon('scan-search') }}扫描目录</button></div>
+  <p class="sync-policy">{{ icon('file-check-2') }}仅收录论文、阅读集合与笔记；全文解析和翻译按需启动。</p>
+  <p class="form-error" role="alert" hidden></p>
+</form>
+<div id="sync-status" role="status" aria-live="polite"></div>
+<section id="sync-preview" hidden aria-labelledby="sync-preview-title">
+  <div class="sync-heading"><h2 id="sync-preview-title" tabindex="-1">确认收录</h2><span class="dim small-text" id="sync-summary"></span></div>
+  <div class="sync-selection-bar"><label class="check"><input id="sync-all" type="checkbox" checked>全选</label><span id="sync-selected" aria-live="polite"></span><label class="sync-search">{{ icon('search') }}<input id="sync-filter" type="search" placeholder="查找标题或集合" aria-label="查找预览论文"></label></div>
+  <div id="sync-groups"></div>
+  <details class="sync-diagnostics" id="sync-diagnostics" hidden><summary id="sync-diagnostics-label"></summary><div id="sync-diagnostic-items"></div></details>
+  <div class="sync-apply-bar"><span id="sync-apply-count"></span><button class="btn primary" id="sync-apply" type="button">{{ icon('check') }}确认收录</button></div>
+</section>
+<section id="sync-result" class="sync-result" role="status" hidden></section>
+{% endblock %}
+{% block scripts %}<script src="/static/sync.js?v={{ static_v }}"></script>{% endblock %}

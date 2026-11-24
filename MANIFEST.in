@@ -1,0 +1,8 @@
+include README.md LICENSE .gitignore .gitattributes
+include config/example.toml
+include docs/USAGE.md docs/DEVELOPMENT.md
+include scripts/check_graph_explorer.py scripts/migrate_taxonomy_v2.py
+include scripts/verify_provider.py scripts/check_install.py
+include .github/workflows/tests.yml
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod]
