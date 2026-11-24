@@ -59,11 +59,12 @@ class TestHappyPath:
     def test_translation_written_per_module(self, pipeline_factory, tmp_path, db):
         pid = run(pipeline_factory(), tmp_path)
         tr = paper_dir(db.path.parent, pid) / "translation"
-        files = [p for p in tr.glob("*.json") if not p.name.startswith("_")]
+        files = sorted(p for p in tr.glob("*.json") if not p.name.startswith("_"))
         assert files
-        payload = read_json(files[0])
-        assert "translations" in payload
-        assert payload["qa"]["ok"] is True
+        for path in files:
+            payload = read_json(path)
+            assert payload["translations"], path.name
+            assert payload["qa"]["ok"] is True, (path.name, payload["qa"])
 
     def test_tags_persisted_with_block_ids(self, pipeline_factory, tmp_path, db):
         pid = run(pipeline_factory(), tmp_path)

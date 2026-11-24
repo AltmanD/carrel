@@ -349,6 +349,9 @@ def _segments_by_block(user: str) -> dict[str, str]:
             continue
         if current and line.strip().startswith("原文："):
             segments[current] = line.split("原文：", 1)[1].strip()
+        elif current and line.lstrip().startswith("|"):
+            # Markdown tables span lines; retain the rows carrying their data.
+            segments[current] += "\n" + line
     return segments
 
 
@@ -391,7 +394,7 @@ def _faithful_translation(src: str, glossary: dict[str, str], numbers_in,
     if len(src) < 40:
         # Headings and short labels compress; keep any fixture digits intact.
         head = used_terms[0] if used_terms else "标题译文"
-        return " ".join([head, *nums]) if nums else head
+        return " ".join([head, *nums, *rels, *cites])
 
     frags = ["这一段的中文译文，用于验证对照阅读的排版效果。"]
     if used_terms:
@@ -402,4 +405,11 @@ def _faithful_translation(src: str, glossary: dict[str, str], numbers_in,
         frags.append("比较条件保持不变：" + "·".join(rels) + "。")
     if cites:
         frags.append("引用编号保持不变：" + " ".join(cites) + "。")
-    return "".join(frags)
+    text = "".join(frags)
+    # The fake backend must meet the length contract for every module, not just
+    # the abstract. Do not let filesystem enumeration order hide fixture flaws.
+    detail = "本段还说明了方法设计、实验设置和结果解释，便于读者核对论文中的论述。"
+    minimum = int(len(src) * .45) + 1
+    if len(text) < minimum:
+        text += (detail * ((minimum - len(text)) // len(detail) + 1))[:minimum - len(text)]
+    return text
