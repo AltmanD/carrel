@@ -32,6 +32,8 @@ Linux CI 使用 python -m playwright install --with-deps chromium 安装系统�
 
 运行资料库、密钥、备份、模型原始响应和探针产物不提交。使用 config/example.toml 创建自己的配置，在独立 data 目录测试。对已有资料库执行写入迁移前先停止服务，并保存备份。
 
+图谱命名或标题显示规则变化时，更新 src/carrel/graph/explorer.py 的 DISPLAY_VERSION。旧快照会重新生成显示字段，并复用分类和处理覆盖缓存；普通图谱请求继续读取内存快照。
+
 构建发行包：
 
     python -m pip install build

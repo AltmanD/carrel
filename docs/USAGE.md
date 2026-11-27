@@ -41,7 +41,7 @@ Windows 路径可用 D:/papers；含空格时加引号。论文页提供总结�
     carrel --config config/local.toml --data-dir data usage
     carrel --data-dir data titles
 
-health 会探测模型连接；titles 默认只读检查中文标题，只有显式 --repair 才备份并调用模型修复。
+health 会探测模型连接；titles 默认只读检查中文标题，只有显式 --repair 才备份并调用模型修复。标题生成和显示会校验模型自我修正、翻译指令等异常内容；不合格时暂时显示原标题，可在论文页修改中文标题或重新生成。图中优先展示原标题或贡献证据明确的方法名，完整中文标题在论文页和详情中保留。
 
 备份时先停止服务，再复制整个 data 目录，保留数据库、论文工件、集合与配置的一致性。仅删除可重建图谱缓存 .graph-projection-v2.json 不会丢失论文；下次启动会重建。不要删除 source.pdf、app.db、笔记或分类文件来解决页面缓存问题。
 
