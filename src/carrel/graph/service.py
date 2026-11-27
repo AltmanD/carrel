@@ -45,6 +45,12 @@ class GraphService:
     def node_detail(self, paper_id):
         return self._explorer.node_detail(paper_id)
 
+    def locate(self, q, **kwargs):
+        return self._explorer.locate(q, **kwargs)
+
+    def citation_overlay(self, paper_id, **kwargs):
+        return self._explorer.citation_overlay(paper_id, **kwargs)
+
     def save_branch_name(self, branch_id, label):
         from carrel.graph.display import save_branch_name
         saved = save_branch_name(self.data_dir, branch_id, label)

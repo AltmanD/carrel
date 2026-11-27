@@ -150,12 +150,36 @@ themeToggle?.addEventListener('click', () => {
 if (themeToggle) renderTheme();
 document.querySelectorAll('.nav-link').forEach((link) => { link.title = link.textContent.trim(); link.setAttribute('aria-label', link.textContent.trim()); });
 document.querySelectorAll('[data-autosubmit]').forEach((input) => input.addEventListener('change', () => input.form.requestSubmit()));
-document.querySelector('[data-toggle-filters]')?.addEventListener('click', (event) => {
-  const open = document.getElementById('library-filters').classList.toggle('is-open');
-  event.currentTarget.setAttribute('aria-expanded', String(open));
-});
-
 const collection = document.getElementById('paper-collection');
+const facetTabs = [...document.querySelectorAll('[data-facet]')];
+function setFacet(name) {
+  facetTabs.forEach(tab => {
+    const selected = tab.dataset.facet === name;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    const panel = document.getElementById(tab.getAttribute('aria-controls'));
+    if (panel) panel.hidden = !selected;
+  });
+  const input = document.querySelector('#library-search input[name="facet"]');
+  if (input) input.value = name;
+  const url = new URL(location.href);
+  url.searchParams.set('facet', name);
+  history.replaceState(null, '', url);
+  document.querySelectorAll('.active-filters .chip, .clear-library-filters').forEach(link => {
+    const target = new URL(link.href);
+    target.searchParams.set('facet', name); link.href = target;
+  });
+}
+facetTabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => setFacet(tab.dataset.facet));
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? facetTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + facetTabs.length) % facetTabs.length;
+    setFacet(facetTabs[next].dataset.facet); facetTabs[next].focus();
+  });
+  tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
+});
 function setView(view) {
   if (collection) collection.dataset.view = view;
   document.querySelectorAll('button[data-view]').forEach((button) => {

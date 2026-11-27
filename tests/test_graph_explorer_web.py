@@ -20,6 +20,14 @@ class ExplorerStub:
         self.calls.append(kwargs)
         return {'status': self.state, 'revision': 'r1', 'groups': [], 'stats': {}, 'filters': kwargs}
 
+    def locate(self, q, **kwargs):
+        self.calls.append({'q': q, **kwargs})
+        return {'status': self.state, 'revision': 'r1', 'matches': []}
+
+    def citation_overlay(self, paper_id, **kwargs):
+        self.calls.append({'paper_id': paper_id, **kwargs})
+        return {'status': self.state, 'revision': 'r1', 'graph': {'nodes': [], 'edges': []}}
+
     def refresh(self):
         self.refreshes += 1
 
@@ -47,6 +55,14 @@ def test_page_is_shell_without_full_graph_or_elk(config, db):
         assert 'data-graph-explorer' in response.text
         assert 'id="graph-data"' not in response.text
         assert 'src="/static/vendor/elk.bundled.js' not in response.text
+        assert 'data-graph-canvas' in response.text
+        assert 'data-locate-input' in response.text
+        assert 'data-directions' in response.text
+        assert 'data-cards' not in response.text
+        assert 'name="q"' not in response.text
+        assert 'data-facets' not in response.text
+        assert 'data-processing-message hidden' in response.text
+        assert response.text.index('data-graph-canvas') < response.text.index('data-processing-message')
     assert service.calls == []
 
 
@@ -80,6 +96,28 @@ def test_refresh_requires_local_request_header(config, db):
     assert service.refreshes == 0
     assert client.post('/api/graph/refresh', headers={'X-Carrel': '1'}).status_code == 202
     assert service.refreshes == 1
+
+
+def test_citation_api_is_bounded_read_only_and_deduplicates_visible(config, db):
+    db.upsert_paper({'id': 'focus', 'title': 'Focus'})
+    client, service = client_with_stub(config, db)
+    response = client.get('/api/graph/citations?paper_id=focus&visible=a&visible=a&visible=b')
+    assert response.status_code == 200
+    assert service.calls[-1] == {'paper_id': 'focus', 'visible': ['a', 'b'], 'limit': 5}
+    assert client.get('/api/graph/citations?paper_id=missing').status_code == 404
+    for limit in (0, 21):
+        assert client.get(f'/api/graph/citations?paper_id=focus&limit={limit}').status_code == 422
+    assert len(service.calls) == 1
+
+
+def test_locate_is_bounded_read_only_and_keeps_collection_scope(config, db):
+    client, service = client_with_stub(config, db)
+    result = client.get('/api/graph/locate?q=reward&view=tree&collection=a&collection=a')
+    assert result.status_code == 200
+    assert service.calls[-1] == {'q': 'reward', 'view': 'tree', 'collection': ['a'], 'limit': 8}
+    for query in ('limit=0', 'limit=13', 'view=wrong'):
+        assert client.get('/api/graph/locate?' + query).status_code == 422
+    assert len(service.calls) == 1
 
 
 def test_manual_method_name_preserves_paper_title(config, db):

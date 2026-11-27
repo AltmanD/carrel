@@ -130,13 +130,33 @@ main { width: 100%; max-width: 1480px; margin: 0 auto; padding: 34px 42px 40px; 
 .heading-count { display: inline-flex; justify-content: center; align-items: center; min-width: 30px; height: 26px; padding: 0 8px; margin-left: 6px; vertical-align: middle; font-size: 13px; font-weight: 500; color: var(--dim); background: var(--soft); border: 1px solid var(--line); border-radius: 5px; }
 .page-meta { font-size: 12px; color: var(--dim); margin: 7px 0 0; }
 .page-meta > span { margin: 0 6px; }
+.library-overview { margin-bottom: 22px; }
+.library-overview h1 { display: flex; align-items: baseline; gap: 10px; font-size: 18px; font-weight: 500; }
+.library-overview h1 strong { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.library-overview h1 > span { color: var(--dim); font-size: 13px; font-weight: 400; }
+.library-overview .page-meta { margin-top: 3px; }
 .library-toolbar { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 22px; margin-bottom: 26px; }
 .search-box { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 160px; height: 40px; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px 0 12px; color: var(--dim); }
 .search-box:focus-within { border-color: var(--accent); }
 .search-box input { border: 0; background: transparent; width: 100%; padding: 0; height: 36px; font-size: 13px; outline: none; color: var(--fg); }
 .select-control select { font-size: 12px; height: 40px; padding: 8px 25px 8px 10px; background: var(--bg); }
-.library-layout { display: grid; grid-template-columns: 182px minmax(0, 1fr); gap: 30px; }
-.filter-toggle { display: none; }
+.library-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 26px; }
+.filter-panel[hidden] { display: none; }
+.filter-mode-tabs { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 2px; padding: 3px; margin: 16px 0; border: 1px solid var(--line); background: var(--soft); border-radius: 6px; }
+.filter-mode-tabs button { padding: 8px 2px; border: 0; border-radius: 4px; background: transparent; color: var(--dim); font-size: 11px; white-space: nowrap; }
+.filter-mode-tabs button[aria-selected='true'] { background: var(--bg); color: var(--accent); box-shadow: 0 1px 3px #0000000b; font-weight: 600; }
+.library-filters .filter-overview { border: 1px solid var(--line); margin: 0; padding: 8px 10px; }
+.results-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.results-head { flex-wrap: wrap; }
+.results-controls .select-control { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 11px; }
+.results-controls .select-control select { height: 34px; padding-block: 5px; color: var(--fg); }
+.results-controls .segmented .icon-btn { width: auto; height: 32px; flex: 0 0 auto; gap: 5px; padding: 5px 8px; font-size: 11px; white-space: nowrap; }
+.results-controls .segmented .icon { width: 15px; height: 15px; }
+.clear-library-filters { font-size: 11px; padding: 3px 4px; }
+.filter-category-children { margin: 0 0 7px 8px; border-left: 1px solid var(--line); padding-left: 12px; }
+.filter-category-children .filter-link.sub { padding-left: 8px; }
+.filter-panel { max-height: min(65vh, 640px); overflow-y: auto; scrollbar-width: thin; padding: 0 8px 8px; margin: 0 -8px; }
+.citation-sort-note { margin: -6px 0 16px; font-size: 11px; line-height: 1.7; color: var(--dim); }
 .library-filters { padding-right: 22px; border-right: 1px solid var(--line); }
 .section-label { display: flex; align-items: center; justify-content: space-between; min-height: 28px; font-size: 12px; color: var(--dim); font-weight: 500; margin-bottom: 12px; }
 .filter-link { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 8px; margin: 3px -8px; border-radius: 5px; color: var(--dim); }
@@ -407,7 +427,7 @@ main { width: 100%; max-width: 1480px; margin: 0 auto; padding: 34px 42px 40px; 
   main { padding: 30px; }
   .workspace-bar { padding-inline: 30px; }
   .foot { margin-inline: 30px; }
-  .library-layout { grid-template-columns: 150px minmax(0,1fr); gap: 23px; }
+  .library-layout { grid-template-columns: 210px minmax(0,1fr); gap: 23px; }
   .library-filters { padding-right: 15px; }
   .cols { grid-template-columns: minmax(0,1fr) 230px; gap: 26px; }
   .side-col { padding-left: 20px; }
@@ -439,12 +459,18 @@ main { width: 100%; max-width: 1480px; margin: 0 auto; padding: 34px 42px 40px; 
   .library-toolbar .segmented { margin-left: auto; }
   .library-layout { grid-template-columns: minmax(0,1fr); gap: 24px; }
   .library-filters { border: 0; border-bottom: 1px solid var(--line); padding: 0 0 18px; }
-  .library-filters:not(.is-open) { display: none; }
-  .filter-toggle { display: inline-flex; font-size: 12px; padding: 8px; }
   .library-filters .section-label:first-child { display: none; }
   .filter-link { display: inline-flex; margin: 0 4px 4px 0; padding: 6px 9px; border: 1px solid var(--line); }
   .filter-link.sub { padding-left: 9px; }
   .filter-link > .count { margin-left: 3px; }
+  .filter-mode-tabs { margin-block: 12px; }
+  .filter-panel { max-height: 230px; }
+  .filter-panel .section-label { display: flex !important; }
+  .filter-category { display: inline-block; vertical-align: top; margin-right: 4px; }
+  .filter-category.expanded { display: block; margin-bottom: 8px; }
+  .filter-category-children { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 0 12px; }
+  .results-controls { gap: 8px; }
+  .results-head { align-items: flex-start; }
   .tag-section-label { margin-top: 12px; margin-bottom: 8px; min-height: 0; }
   .filter-tags { max-height: 100px; overflow-y: auto; }
   .cols { grid-template-columns: minmax(0,1fr); gap: 28px; }
@@ -490,8 +516,6 @@ main { width: 100%; max-width: 1480px; margin: 0 auto; padding: 34px 42px 40px; 
   .library-toolbar { gap: 6px; }
   .library-toolbar .segmented { padding: 2px; }
   .library-toolbar .segmented .icon-btn { width: 27px; flex-basis: 27px; }
-  .filter-toggle { font-size: 11px; gap: 4px; padding: 7px; }
-  .filter-toggle .icon { width: 14px; height: 14px; }
   .paper-card { gap: 13px; padding: 20px 0; }
   .paper-cover { flex-basis: 68px; width: 68px; margin-top: 5px; }
   .paper-card h2 { font-size: 15px; }

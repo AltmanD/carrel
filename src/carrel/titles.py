@@ -36,6 +36,16 @@ def title_issues(value, source: str = '', *, human: bool = False) -> list[str]:
     if not text:
         return ['标题为空']
     issues = []
+    # Recheck cached titles on read without invalidating unrelated valid titles.
+    # Match translator notes, allowing scientific topics like JSON or 不对称.
+    if re.search(
+        r'(?:^|[—–。；;]|--)\s*(?:不对|错了|抱歉)(?=[，,:：\s]|$)'
+        r'|(?:仅|只)(?:需|需要)?输出\s*(?:一个|单行)?\s*(?:中文)?标题(?:翻译|译名)?'
+        r'|(?:^|[—–。；;]|--)\s*(?:重新(?:翻译|输出|生成)|遵循(?:格式|要求)|格式要求)'
+        r'|(?:^|[—–。；;]|--)\s*(?:中文译名|标题翻译|翻译任务|输出标题)\s*[:：]',
+        text,
+    ):
+        issues.append('标题含修改过程或翻译指令')
     if any(c in text for c in ('\n', '\r', '\u2028', '\u2029')):
         issues.append('标题含换行或段落')
     if chr(96) * 3 in text or re.search(r'\*\*|^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)、]\s)', text):

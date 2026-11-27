@@ -118,6 +118,9 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
 
     def library_papers(*, discipline="", field="", subfield="", **filters):
         papers = [project_title(p, paper_dir(config.data_dir, p['id'])) for p in db.list_papers(**filters)]
+        if filters.get('sort') == 'citations':
+            citation_metrics(papers)
+            papers.sort(key=lambda p: (-p['cited_by_count'], p.get('title') or '', p['id']))
         if not discipline and not field and not subfield:
             return papers
         if subfield:
@@ -128,6 +131,17 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
             and (not field or category.get("field") == field)
             for category in paper_categories(paper)
         )]
+
+    def citation_metrics(papers):
+        counts = {r['src_id']: r['n'] for r in db.query(
+            "SELECT src_id, COUNT(DISTINCT dst_id) AS n FROM relations "
+            "WHERE kind='cited_by' AND src_id!=dst_id GROUP BY src_id")}
+        for paper in papers:
+            relations = read_json(paper_dir(config.data_dir, paper['id']) / 'relations.json', {}) or {}
+            count = relations.get('cited_by_count') if isinstance(relations, dict) else None
+            known = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+            paper['citation_total_known'] = known
+            paper['cited_by_count'] = count if known else counts.get(paper['id'], 0)
 
     def used_categories(*, include_custom=False):
         # A paper can belong to several paths; count each paper once per facet.
@@ -364,8 +378,13 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
         collection = request.query_params.get("collection", "")
         status = request.query_params.get("status", "")
         sort = request.query_params.get("sort", "recent")
+        if sort not in ('recent', 'title', 'year', 'rank', 'citations'):
+            sort = 'recent'
+        facet = request.query_params.get('facet', '')
+        if facet not in ('collection', 'category', 'keyword'):
+            facet = 'keyword' if tag else 'category' if discipline or field_name or subfield else 'collection'
         filters = {"q": q, "discipline": discipline, "field": field_name, "subfield": subfield,
-                   "tag": tag, "status": status, "sort": sort, "collection": collection}
+                   "tag": tag, "status": status, "sort": sort, "collection": collection, 'facet': facet}
 
         def filter_url(**changes):
             values = {**filters, **changes}
@@ -373,6 +392,9 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
 
         papers = library_papers(q=q, discipline=discipline, field=field_name,
                                 subfield=subfield, tag=tag, status=status, sort=sort, collection=collection)
+        if sort != 'citations':
+            citation_metrics(papers)
+        tags = db.all_tags()
         for p in papers:
             paper_tags = db.tags_for(p["id"])
             p["tags"] = paper_tags[:4]
@@ -380,7 +402,6 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
             p["human_priorities"] = sorted({n["priority"] for n in db.notes_for(p["id"])
                                             if n["priority"] and (not collection or n["collection_id"] == collection)})
             p["authors_display"] = _authors_display(p.get("authors"))
-            p["cited_by_count"] = len(db.relations_for(p["id"], "cited_by"))
             pdir = paper_dir(config.data_dir, p["id"])
             p["has_pdf"] = (pdir / "source.pdf").is_file()
             summary = read_json(pdir / "summary.json", {}) or {}
@@ -391,17 +412,19 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
                 if not summary.get(key) and preview.get(key):
                     summary[key] = preview[key]
             p["summary"] = summary
+        collections = db.collections()
+        visible_collections = [c for c in collections if c['name'].strip() != '未归类']
         return templates.TemplateResponse(request, "index.html", {
             "papers": papers,
             "categories": used_categories(),
-            "tags": db.all_tags()[:24],
-            "collections": db.collections(),
-            "collection_names": {c["id"]: c["name"] for c in db.collections()},
+            "tags": tags,
+            "collections": visible_collections,
+            "collection_names": {c["id"]: c["name"] for c in collections},
             "filters": filters,
             "filter_url": filter_url,
             "has_filters": any((q, discipline, field_name, subfield, tag, status, collection)),
             "total": db.one("SELECT COUNT(*) AS n FROM papers")["n"],
-            "tag_total": len(db.all_tags()),
+            "tag_total": len(tags),
             "health": _health(config),
             # Every path in the taxonomy for the facet's free-input datalist.
             "all_categories": sorted(
@@ -872,6 +895,26 @@ def create_app(config: AppConfig, db: Database) -> FastAPI:
                 job_id=last['id'] if last else '', job_status=last['status'] if last else '',
                 tree_rebuilding=bool(last and last['status'] in ('queued', 'running')),
                 tree_error=last['error_detail'] if last and last['status'] == 'failed' else '')
+        return explorer_response(request, payload)
+
+    @app.get('/api/graph/citations')
+    def api_graph_citations(request: Request, paper_id: str, limit: int = 5):
+        visible = list(dict.fromkeys(v.strip() for v in request.query_params.getlist('visible') if v.strip()))
+        if not 1 <= limit <= 20 or len(visible) > 500:
+            return _err(422, 'invalid_parameter', '引用展开范围或数量无效')
+        if not db.get_paper(paper_id):
+            return _err(404, 'not_found', '论文不存在')
+        payload = app.state.graphs.citation_overlay(paper_id, visible=visible, limit=limit)
+        if payload is None:
+            return JSONResponse({'status': 'building', 'retry_after_ms': 500}, status_code=202)
+        return explorer_response(request, payload)
+
+    @app.get('/api/graph/locate')
+    def api_graph_locate(request: Request, q: str = '', view: str = 'graph', limit: int = 8):
+        if view not in ('graph', 'tree') or not 1 <= limit <= 12:
+            return _err(422, 'invalid_parameter', '定位范围或数量无效')
+        collections = list(dict.fromkeys(v.strip() for v in request.query_params.getlist('collection') if v.strip()))
+        payload = app.state.graphs.locate(q.strip()[:200], view=view, collection=collections, limit=limit)
         return explorer_response(request, payload)
 
     @app.get('/api/graph/node')

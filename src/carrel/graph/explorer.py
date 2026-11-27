@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from dataclasses import asdict
 import json
 import os
+import re
+import unicodedata
+from difflib import SequenceMatcher
 from threading import RLock
 
 from carrel.coverage import paper_coverage, missing_capabilities
@@ -19,6 +22,11 @@ from carrel.graph.display import branch_names
 from carrel.graph.model import Graph, Edge, Node
 from carrel.graph.revision import revision, paper_revision
 from carrel.store.paths import paper_dir
+
+
+# Bump when title validation or graph naming rules change. Refresh display
+# fields from disk while preserving the expensive coverage/classification cache.
+DISPLAY_VERSION = 1
 
 
 def values(value):
@@ -42,12 +50,13 @@ class Explorer:
         try:
             data = json.loads(self.cache_path.read_text(encoding='utf-8'))
             if data['version'] == 2:
-                snapshot = data['snapshot']
-                snapshot['nodes'] = {key: Node(**value) for key, value in snapshot['nodes'].items()}
-                snapshot['ranks'] = {tuple(key): value for key, value in snapshot['ranks']}
-                snapshot['token'] = None
-                self.snapshots['graph'] = snapshot
                 self.paper_cache = data['papers']
+                if data.get('display_version') == DISPLAY_VERSION:
+                    snapshot = data['snapshot']
+                    snapshot['nodes'] = {key: Node(**value) for key, value in snapshot['nodes'].items()}
+                    snapshot['ranks'] = {tuple(key): value for key, value in snapshot['ranks']}
+                    snapshot['token'] = None
+                    self.snapshots['graph'] = snapshot
         except (OSError, ValueError, KeyError, TypeError):
             pass
 
@@ -58,7 +67,8 @@ class Explorer:
         temporary = self.cache_path.with_suffix('.tmp')
         try:
             temporary.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(json.dumps(dict(version=2, snapshot=data, papers=self.paper_cache), ensure_ascii=False), encoding='utf-8')
+            temporary.write_text(json.dumps(dict(version=2, display_version=DISPLAY_VERSION,
+                                                  snapshot=data, papers=self.paper_cache), ensure_ascii=False), encoding='utf-8')
             os.replace(temporary, self.cache_path)
         except OSError:
             pass
@@ -169,6 +179,7 @@ class Explorer:
                 caps = paper_coverage(base)
                 coverage[pid] = next((depth for depth in ('full', 'notes', 'skim')
                                       if not missing_capabilities(PRESETS[depth], caps)), 'indexed')
+            if not cached or cached['stamp'] != stamp or cached.get('display_version') != DISPLAY_VERSION:
                 from carrel.titles import project_title
                 node = _paper_node(project_title(paper, base, legacy_check=False), '')
                 node.label = str(service._read_json_cached(base / 'graph_display.json').get('label') or
@@ -176,7 +187,8 @@ class Explorer:
                                              service._read_json_cached(base / 'glossary.json'),
                                              service._read_json_cached(base / 'summary.json')))
                 self.paper_cache[pid] = dict(stamp=stamp, node=asdict(node), categories=cats,
-                                             coverage=coverage[pid], motivation=motivations[pid])
+                                             coverage=coverage[pid], motivation=motivations[pid],
+                                             display_version=DISPLAY_VERSION)
             member = sorted(memberships[pid], key=lambda c: (c.get('sort') or 0, c['id']))
             node.meta.update(categories=cats, tags=tags[pid], coverage=coverage[pid],
                              collections=[{'id': c['id'], 'name': c['name']} for c in member],
@@ -211,7 +223,8 @@ class Explorer:
             adjacency[edge['source']].append(edge)
             adjacency[edge['target']].append(edge)
         names = branch_names(service.data_dir)
-        content_revision = revision_of([token, names, [(pid, entry['stamp']) for pid, entry in sorted(self.paper_cache.items())]])
+        content_revision = revision_of([token, DISPLAY_VERSION, names,
+                                        [(pid, entry['stamp']) for pid, entry in sorted(self.paper_cache.items())]])
         return dict(token=token, revision=content_revision, generated_at=datetime.now(timezone.utc).isoformat(),
                     papers=papers, nodes=nodes, categories=categories, coverage=coverage, tags=tags,
                     collections=collections, ranks=ranks, adjacency=adjacency, motivations=motivations, tasks=tasks,
@@ -303,7 +316,7 @@ class Explorer:
                 result['groups'].sort(key=lambda g: (snapshot['collections'].get(g['id'], {}).get('sort') or 0, g['id']))
             else:
                 result['groups'].sort(key=lambda g: max((str(snapshot['papers'][p].get('created_at') or '') for p in buckets[g['id']]), default=''), reverse=True)
-            result['facets'] = self.facets(snapshot)
+            result['facets'] = self.facets(snapshot, ids)
             result.update(total=len(ids), shown=len(ids), omitted=0)
             if group_by == 'collection':
                 result['notes'].append('集合允许重叠，各组数量之和可能大于去重总数。')
@@ -340,6 +353,12 @@ class Explorer:
         for node in graph.nodes:
             node.focus = node.meta['paper_id'] == focus
             node.meta['out_of_scope'] = node.meta['paper_id'] not in scope
+            if group_by == 'category' and (filters['category'] or group_id):
+                requested = set(filters['category']) | {group_id}
+                matching = next((c for c in node.meta['categories']
+                                 if requested.intersection((c['id'], c['label'], c['parent']))), None)
+                if matching:
+                    node.meta['branch'] = {'key': matching['id'], 'label': matching['label']}
             if group_by == 'collection':
                 member = node.meta['collections']
                 preferred = filters['collection'][0] if len(filters['collection']) == 1 else group_id
@@ -354,9 +373,15 @@ class Explorer:
         return min(((row.get('provider') or '', row.get('rank') or 0)
                     for row in edge['evidence']), default=('', 0))
 
-    def facets(self, snapshot):
+    def facets(self, snapshot, ids=None):
         cats, collections, keywords = {}, Counter(), Counter()
+        allowed = set(ids) if ids is not None else None
         for pid, node in snapshot['nodes'].items():
+            collections.update(c['id'] for c in node.meta['collections'])
+            if not node.meta['collections']:
+                collections['uncollected'] += 1
+            if allowed is not None and pid not in allowed:
+                continue
             parents = set()
             for c in snapshot['categories'][pid]:
                 facet = cats.setdefault(c['id'], {**c, 'level': 2 if c['parent'] else 1, 'count': 0})
@@ -366,9 +391,6 @@ class Explorer:
             for parent in parents:
                 facet = cats.setdefault(parent, {'id': parent, 'label': parent, 'parent': '', 'level': 1, 'count': 0})
                 facet['count'] += 1
-            collections.update(c['id'] for c in node.meta['collections'])
-            if not node.meta['collections']:
-                collections['uncollected'] += 1
             keywords.update(set(snapshot['tags'][pid]))
         return dict(categories=list(cats.values()),
                     collections=[{'id': cid, 'label': c['name'], 'count': collections[cid]} for cid, c in snapshot['collections'].items()] +
@@ -397,8 +419,8 @@ class Explorer:
                     queue.extend(adjacency[current] - component)
             remaining -= component
             components['branch:' + revision_of(sorted(component))] = component
-        allowed = {nid for nid, n in nodes.items() if n.meta['paper_id'] in ids}
-        result['facets'] = self.facets(snapshot)
+        allowed = {nid for nid, n in nodes.items() if nid in adjacency and n.meta['paper_id'] in ids}
+        result['facets'] = self.facets(snapshot, [nodes[n].meta['paper_id'] for n in allowed])
         result['stats'].update(included=len(allowed), excluded=len(ids) - len(allowed))
         result['notes'] += tree.notes
         if mode == 'overview':
@@ -416,7 +438,7 @@ class Explorer:
                     result['groups'].append(self.card(snapshot, key, label, pids, 'branch', branch['label']))
             result.update(total=len(ids), shown=len(allowed), omitted=len(ids) - len(allowed))
             return result
-        members = components.get(group_id, set()) if group_id else set(nodes)
+        members = components.get(group_id, set()) if group_id else set(adjacency)
         if members:
             roots_for_name = [n for n in members if predecessor.get(n) not in members]
             anchor = nodes[min(roots_for_name or members)].meta['paper_id']
@@ -483,6 +505,89 @@ class Explorer:
                       collapsed=[{'after_id': nodes[chosen[-1]].meta['paper_id'] if chosen else '',
                                   'count': max(0, len(ordered) - offset - len(chosen)), 'label': '展开更多'}] if offset + len(chosen) < len(ordered) else [])
         return result
+
+    def citation_overlay(self, paper_id, *, visible=(), limit=5):
+        """All focus citations within the canvas, plus bounded outside context."""
+        snapshot, rebuilding = self.ensure('graph')
+        if not snapshot:
+            return dict(status='building', retry_after_ms=500)
+        if paper_id not in snapshot['nodes']:
+            return None
+        visible = set(visible) & snapshot['nodes'].keys()
+        visible.add(paper_id)
+        candidates = [e for e in snapshot['adjacency'].get(paper_id, ()) if e['role'] == 'cites']
+        other = lambda e: e['target'] if e['source'] == paper_id else e['source']
+        candidates.sort(key=lambda e: (e['source'] != paper_id, self.provider_rank(e), other(e)))
+        outside = list(dict.fromkeys(other(e) for e in candidates if other(e) not in visible))
+        selected = outside[:limit]
+        included = visible | set(selected)
+        graph = Graph(scope='library', revision=snapshot['revision'])
+        graph.focus = snapshot['nodes'][paper_id].id
+        graph.nodes = [deepcopy(snapshot['nodes'][pid]) for pid in [paper_id, *selected]]
+        graph.edges = [Edge(snapshot['nodes'][e['source']].id, snapshot['nodes'][e['target']].id, 'cites')
+                       for e in candidates if other(e) in included]
+        return dict(status='ready', revision=snapshot['revision'], stale=rebuilding,
+                    graph=graph.to_dict(), outside_total=len(outside), outside_shown=len(selected))
+
+    def locate(self, q, *, view='graph', collection=(), limit=8):
+        """Locate papers in the cached projection without filtering the canvas."""
+        snapshot, rebuilding = self.ensure(view)
+        if not snapshot:
+            return dict(status='building', matches=[], retry_after_ms=500)
+        normalize = lambda text: unicodedata.normalize('NFKC', str(text)).casefold()
+        terms = re.findall(r'\w+', normalize(q))
+        if not terms:
+            return dict(status='ready', matches=[])
+        branches = {}
+        if view == 'tree':
+            adjacency = defaultdict(set)
+            tree_nodes = {n.id: n for n in snapshot['tree'].nodes}
+            for edge in snapshot['tree'].edges:
+                if edge.primary:
+                    adjacency[edge.source].add(edge.target)
+                    adjacency[edge.target].add(edge.source)
+            remaining = set(adjacency)
+            while remaining:
+                members, queue = set(), [min(remaining)]
+                while queue:
+                    current = queue.pop()
+                    if current in members:
+                        continue
+                    members.add(current)
+                    queue.extend(adjacency[current] - members)
+                remaining -= members
+                branch_id = 'branch:' + revision_of(sorted(members))
+                branches.update((tree_nodes[n].meta['paper_id'], branch_id) for n in members)
+        matches = []
+        for pid, node in snapshot['nodes'].items():
+            if view == 'tree' and pid not in branches:
+                continue
+            if collection and not set(collection).intersection(c['id'] for c in node.meta['collections']):
+                continue
+            label = normalize(node.label)
+            text = normalize(node.label + ' ' + node.title + ' ' + node.meta.get('title_original', ''))
+            words = re.findall(r'\w+', text)
+            scores = []
+            for term in terms:
+                if term in label:
+                    scores.append(1.0)
+                elif term in text:
+                    scores.append(.9)
+                else:
+                    # Permit small spelling differences in meaningful words.
+                    score = max((SequenceMatcher(None, term, word).ratio() for word in words
+                                 if len(term) >= 3 and abs(len(term) - len(word)) <= 2), default=0)
+                    scores.append(score if score >= .72 else 0)
+            if not all(scores):
+                continue
+            category = snapshot['categories'][pid][0]
+            matches.append(dict(paper_id=pid, node_id=node.id, label=node.label, title=node.title,
+                                direction=' / '.join(dict.fromkeys(filter(None, (category['parent'], category['label'])))),
+                                category_id=category['id'], branch_id=branches.get(pid, ''),
+                                score=sum(scores) / len(scores)))
+        matches.sort(key=lambda p: (-p['score'], len(p['label']), p['paper_id']))
+        return dict(status='ready', matches=matches[:limit], stale=rebuilding,
+                    revision=snapshot['revision'])
 
     def node_detail(self, paper_id):
         snapshot, rebuilding = self.ensure('graph')

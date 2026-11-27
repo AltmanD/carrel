@@ -367,8 +367,10 @@
       });
       const resize = () => {
         const narrow = this.canvas.parentElement.clientWidth < 600;
+        // Keep SVG units aligned with CSS pixels before an asynchronous layout.
+        // Otherwise a desktop viewBox scales every label down on mobile.
+        this.fit({ keepZoom: true });
         if (this.scope !== 'library' && this.data && narrow !== this.narrow) this.render(this.data, { keepView: true });
-        else this.fit({ keepZoom: true });
       };
       this.observer = new ResizeObserver(resize);
       if (this.canvas.parentElement) this.observer.observe(this.canvas.parentElement);
@@ -433,6 +435,7 @@
 
     async render(data, { keepView = false } = {}) {
       if (!data || !Array.isArray(data.nodes)) { this.setStatus('图谱数据格式异常。', { error: true }); return; }
+      this.clearCitationOverlay();
       this.layoutEngine?.terminateWorker();
       const version = ++this.renderVersion;
       const previous = this.nodes;
@@ -511,23 +514,7 @@
       this.layoutContext = JSON.stringify([data.revision, data.scope, data.focus, FONT, FONT_SMALL, document.fonts?.status, Math.floor(this.canvas.parentElement.clientWidth / 120)]);
       const narrow = this.scope !== 'library' && this.canvas.parentElement.clientWidth < 600;
       const nodes = data.nodes.map((raw) => {
-        const compact = raw.role === 'category' || raw.role === 'tag';
-        const font = compact ? FONT_SMALL : FONT;
-        const label = raw.label || raw.title || '';
-        const maxWidth = compact ? 220 : 260;
-        const lines = wrapLabel(label, maxWidth, font);
-        const domain = data.scope === 'motivation_tree' ? raw.meta?.branch?.label || '未分类' : '';
-        const boundary = (data.boundary || this.options.boundary || []).some(item => item.paper_id === raw.meta?.paper_id);
-        const domainLines = domain ? wrapLabel(domain, maxWidth, FONT_SMALL) : [];
-        if (boundary || raw.meta?.predecessor_out_of_scope) domainLines.push("前驱在范围外");
-        else if (raw.meta?.out_of_scope) domainLines.push("范围外上下文");
-        return { ...raw, lines, font, domainLines,
-          tone: domainTone(raw.meta?.branch?.key),
-          width: Math.max(compact ? 80 : 132, 36 + Math.max(...lines.map((line) => measure(line, font)),
-            ...domainLines.map((line) => measure(line, FONT_SMALL)))),
-          height: 28 + lines.length * 18 + (raw.focus ? 18 : 0)
-            + (domainLines.length ? 10 + domainLines.length * 16 : 0),
-        };
+        return this.prepareNode(raw, data);
       });
       const byId = new Map(nodes.map((node) => [node.id, node]));
       const edges = data.edges.filter((edge) => byId.has(edge.source) && byId.has(edge.target)).map((edge) => ({ ...edge }));
@@ -545,11 +532,110 @@
           ? edge.role === 'motivation' && edge.primary === false
           : Boolean(edge.supporting);
       }
-      const layout = data.scope === 'paper'
+      const layout = data.mode === 'aggregate' ? this.layoutAggregate(visible)
+        : data.scope === 'paper'
         ? await this.layoutFocusGraph(nodes, edges, data.focus, narrow)
         : data.scope === 'motivation_tree' ? await this.layoutMotivation(visible, visibleEdges)
           : this.layoutLibrary(visible, byId, visibleEdges);
       return { ...layout, nodes: byId, edges, narrow };
+    }
+
+    prepareNode(raw, data) {
+      const compact = raw.role === 'category' || raw.role === 'tag';
+      const font = compact ? FONT_SMALL : FONT;
+      const maxWidth = compact ? 220 : 260;
+      const lines = wrapLabel(raw.label || raw.title || '', maxWidth, font);
+      const domain = raw.meta?.aggregate ? raw.meta.count + ' 篇 · 点击展开'
+        : data.scope === 'motivation_tree' ? raw.meta?.branch?.label || '未分类' : '';
+      const boundary = (data.boundary || this.options.boundary || []).some(item => item.paper_id === raw.meta?.paper_id);
+      const domainLines = domain ? wrapLabel(domain, maxWidth, FONT_SMALL) : [];
+      if (raw.meta?.citation_context) domainLines.push('图外论文');
+      else if (boundary || raw.meta?.predecessor_out_of_scope) domainLines.push('前驱在范围外');
+      else if (raw.meta?.out_of_scope) domainLines.push('范围外上下文');
+      return {...raw, lines, font, domainLines, tone: domainTone(raw.meta?.branch?.key),
+        width: Math.max(compact ? 80 : 132, 36 + Math.max(...lines.map(line => measure(line, font)),
+          ...domainLines.map(line => measure(line, FONT_SMALL)))),
+        height: 28 + lines.length * 18 + (raw.focus ? 18 : 0)
+          + (domainLines.length ? 10 + domainLines.length * 16 : 0)};
+    }
+
+    setCitationOverlay(graph) {
+      if (this.destroyed || this.scope !== 'library' || !this.data) return;
+      const previousAnchor = this.nodes.get(graph.focus);
+      this.clearCitationOverlay();
+      const anchor = this.nodes.get(graph.focus) || (previousAnchor && {...previousAnchor});
+      if (!anchor) return;
+      this.citationOverlay = {edges: this.edges, cites: this.layers.cites, added: new Set()};
+      const overlay = this.citationOverlay, added = [];
+      for (const raw of graph.nodes || []) {
+        if (this.nodes.has(raw.id)) continue;
+        const node = this.prepareNode({...raw, focus: false, meta: {...raw.meta, citation_context: true}}, graph);
+        if (raw.id === graph.focus) { node.x = anchor.x; node.y = anchor.y; }
+        else added.push(node);
+        this.nodes.set(node.id, node); overlay.added.add(node.id);
+      }
+      const placed = [...this.nodes.values()].filter(n => !added.includes(n) && !n.hidden);
+      const rect = this.canvas.getBoundingClientRect(), {x, y, k} = this.transform;
+      for (const node of added) {
+        const incoming = (graph.edges || []).some(e => e.source === node.id && e.target === graph.focus);
+        const candidates = [];
+        for (let ring = 1; ring <= placed.length + 2; ring++) {
+          for (let dx = -ring; dx <= ring; dx++) for (let dy = -ring; dy <= ring; dy++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+            const nx = anchor.x + dx * Math.max(260, (anchor.width + node.width) / 2 + 36);
+            const ny = anchor.y + dy * Math.max(100, (anchor.height + node.height) / 2 + 28);
+            if (placed.some(p => Math.abs(p.x - nx) < (p.width + node.width) / 2 + 20 && Math.abs(p.y - ny) < (p.height + node.height) / 2 + 20)) continue;
+            const onScreen = nx*k+x > node.width*k/2+12 && nx*k+x < rect.width-node.width*k/2-12
+              && ny*k+y > node.height*k/2+12 && ny*k+y < rect.height-node.height*k/2-55;
+            candidates.push({x: nx, y: ny, score: (onScreen ? 0 : 10000) + ring*100 + Math.abs(dy)*10 + ((incoming ? dx <= 0 : dx >= 0) ? 0 : 20)});
+          }
+          if (candidates.some(c => c.score < 10000)) break;
+          if (candidates.length && ring >= 3) break;
+        }
+        candidates.sort((a,b) => a.score-b.score);
+        Object.assign(node, candidates[0] || {x: anchor.x, y: anchor.y + 180});
+        placed.push(node);
+      }
+      const edges = new Map(overlay.edges.map(e => [edgeKey(e), e]));
+      for (const edge of graph.edges || []) {
+        if (this.nodes.has(edge.source) && this.nodes.has(edge.target)) edges.set(edgeKey(edge), {...edge, citationOverlay: true});
+      }
+      this.edges = [...edges.values()]; this.layers.cites = true; this.selected = graph.focus;
+      this.draw(); this.applyLayers(); this.highlight(this.selected); this.applyTransform();
+    }
+
+    clearCitationOverlay() {
+      const overlay = this.citationOverlay;
+      if (!overlay) return;
+      overlay.added.forEach(id => this.nodes.delete(id));
+      this.edges = overlay.edges; this.layers.cites = overlay.cites; this.citationOverlay = null;
+      if (!this.nodes.has(this.selected)) this.selected = '';
+      this.draw(); this.applyLayers(); this.highlight(this.selected); this.applyTransform();
+    }
+
+    clearSelection() {
+      this.clearCitationOverlay(); this.selected = ''; this.hovered = '';
+      this.highlight(''); this.degradeLabels(); this.applyTransform();
+    }
+
+    layoutAggregate(nodes) {
+      // Bounded navigation nodes only: no invented relationships between areas.
+      const width = this.canvas.parentElement.clientWidth || 800;
+      const cellWidth = Math.max(240, ...nodes.map(n => n.width + 20));
+      const columns = Math.max(1, Math.min(4, Math.floor((width - 56) / (cellWidth + 32))));
+      let rowY = 32;
+      for (let i = 0; i < nodes.length; i += columns) {
+        const row = nodes.slice(i, i + columns);
+        const height = Math.max(...row.map(n => n.height)) + 26;
+        row.forEach((node, column) => {
+          node.width = Math.max(node.width, cellWidth);
+          node.height = Math.max(node.height, 106);
+          node.x = 32 + column * (cellWidth + 32) + cellWidth / 2;
+          node.y = rowY + node.height / 2;
+        });
+        rowY += Math.max(height, 136);
+      }
+      return { routes: new Map(), regions: [], width: columns * (cellWidth + 32) + 32, height: rowY };
     }
 
     async layoutMotivation(nodes, edges) {
@@ -862,7 +948,7 @@
       }
       for (const node of this.nodes.values()) {
         if (node.layoutHidden) continue;
-        const signature = JSON.stringify([node.label, node.title, node.width, node.height, node.focus, node.domainLines, node.tone]);
+        const signature = JSON.stringify([node.label, node.title, node.width, node.height, node.focus, node.domainLines, node.tone, node.meta?.citation_context]);
         const old = reusable.get(node.id);
         if (old?.signature === signature) {
           node.el = old.el; node.shape = old.shape; node.text = old.text;
@@ -943,7 +1029,7 @@
       const labelX = 0;
       const labelY = -node.height / 2 + 28 + (node.focus ? 18 : 0);
       const group = el('g', {
-        class: `graph-node ${node.role}${node.focus ? ' focus' : ''}`,
+        class: `graph-node ${node.role}${node.focus ? ' focus' : ''}${node.meta?.aggregate ? ' aggregate' : ''}${node.meta?.citation_context ? ' citation-context' : ''}`,
         'data-node-id': node.id,
         'data-node-role': node.role,
         'data-tone': node.tone,
@@ -1176,7 +1262,9 @@
       // A tap selects; a drag pans and must never navigate or select.
       if (wasSingle && !this.dragged && pressed && this.nodes.has(pressed)) {
         event.preventDefault();
-        this.select(pressed, { focus: true });
+        this.select(pressed, { focus: true, activate: true });
+      } else if (wasSingle && !this.dragged && !pressed) {
+        this.options.onBackground?.();
       }
       if (!this.pointers?.size) this.dragged = false;
     }
@@ -1196,7 +1284,7 @@
     }
 
     /* ----------------------------------------------------------- selection */
-    select(nodeId, { focus = false, reveal = false } = {}) {
+    select(nodeId, { focus = false, reveal = false, activate = false } = {}) {
       if (!this.nodes.has(nodeId)) return;
       if (this.scope === 'library' && this.nodes.get(nodeId).role === 'category') {
         this.setFilter('category', nodeId);
@@ -1207,7 +1295,8 @@
       this.previousFocus = document.activeElement;
       const node = this.nodes.get(nodeId);
       this.highlight(nodeId);
-      if (changed && this.options.onSelect) this.options.onSelect(node.meta?.paper_id || node.id);
+      if (activate && this.options.onActivate) this.options.onActivate(node.meta?.paper_id || node.id);
+      else if ((changed || activate) && this.options.onSelect) this.options.onSelect(node.meta?.paper_id || node.id);
       if (!this.options.managed) this.showDetail(nodeId);
       if (node.el) {
         this.canvas.querySelectorAll('[data-node-id]').forEach((element) => {
@@ -1582,14 +1671,22 @@
     onKeyDown(event) {
       const keys = ['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'Enter', ' ', 'Escape', 'Home'];
       if (!keys.includes(event.key)) return;
-      if (event.key === 'Escape') { this.closeDetail(); return; }
+      if (event.key === 'Escape') {
+        if (this.options.onBackground) this.options.onBackground();
+        else if (this.detail) this.closeDetail();
+        return;
+      }
       const list = [...this.nodes.values()].filter((node) => !node.hidden)
         .sort((a, b) => (a.y - b.y) || (a.x - b.x));
       if (!list.length) return;
       event.preventDefault();
       if (!this.selected) { this.select(list[0].id, { focus: true, reveal: true }); return; }
       const current = this.nodes.get(this.selected);
-      if (event.key === 'Enter' || event.key === ' ') { this.showDetail(this.selected); return; }
+      if (event.key === 'Enter' || event.key === ' ') {
+        if (this.options.managed) this.select(this.selected, { activate: true });
+        else this.showDetail(this.selected);
+        return;
+      }
       if (event.key === 'Home') { this.select(list[0].id, { focus: true, reveal: true }); return; }
       // Neighbours first, then the nearest node in the arrow's direction.
       const near = [...this.neighbours(this.selected)].map((id) => this.nodes.get(id)).filter((n) => n && !n.hidden);

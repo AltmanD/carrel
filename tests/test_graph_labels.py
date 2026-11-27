@@ -7,6 +7,21 @@ from carrel.store.db import Database
 from carrel.store.paths import atomic_write_json, paper_dir
 
 
+def test_named_contribution_without_glossary():
+    title = 'Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model'
+    assert paper_label(title, summary={'contributions': [
+        '提出 MuZero 算法，将 tree-based search 与 learned model 相结合。',
+    ]}) == 'MuZero'
+    assert paper_label(title, summary={'contributions': ['与 MuZero 算法进行比较。']}) != 'MuZero'
+    assert paper_label(title, summary={'contributions': ['提出 alignment 方法。']}) != 'alignment'
+    assert paper_label(title, summary={'contributions': [
+        '已有工作提出 AlphaZero 算法，依赖环境规则。', '本文提出 MuZero 算法。',
+    ]}) == 'MuZero'
+    assert paper_label(title, summary={'contributions': [
+        '提出 alignment 方法。', '提出 MuZero 算法。',
+    ]}) == 'MuZero'
+
+
 @pytest.mark.parametrize("title,expected", [
     ("CPU-ARC: Agentic Reasoning Caching for Reasoning Reuse", "CPU-ARC"),
     ("Towards Foundation Decision Models: Drex", "Drex"),

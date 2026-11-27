@@ -164,6 +164,45 @@ def test_projection_restart_reuses_coverage(db, tmp_path, monkeypatch):
         second.close()
 
 
+def test_old_display_cache_refreshes_names_without_rebuilding_coverage(db, tmp_path, monkeypatch):
+    import json
+    import carrel.graph.explorer as explorer
+
+    pid = 'muzero'
+    title = 'Mastering Atari, Go, Chess and Shogi by Planning with a Learned Model'
+    db.upsert_paper({'id': pid, 'title': title, 'title_zh': '学习模型规划——不对，仅输出标题翻译'})
+    atomic_write_json(paper_dir(tmp_path, pid) / 'summary.json', {
+        'contributions': ['提出 MuZero 算法，将树搜索与学习模型相结合。'],
+    })
+    first = GraphService(db, tmp_path)
+    try:
+        ready(first)
+    finally:
+        first.close()
+    cache_path = tmp_path / '.graph-projection-v2.json'
+    persisted = json.loads(cache_path.read_text(encoding='utf-8'))
+    persisted.pop('display_version')
+    entry = persisted['papers'][pid]
+    entry.pop('display_version')
+    entry['node']['label'] = '不对，仅输出标题翻译'
+    entry['node']['title'] = db.get_paper(pid)['title_zh']
+    persisted['snapshot']['nodes'][pid] = entry['node']
+    atomic_write_json(cache_path, persisted)
+    monkeypatch.setattr(explorer, 'paper_coverage',
+                        lambda _: (_ for _ in ()).throw(AssertionError('coverage unnecessarily rebuilt')))
+    second = GraphService(db, tmp_path)
+    try:
+        assert not second._explorer.snapshots
+        result = ready(second, mode='group')
+        node = result['graph']['nodes'][0]
+        assert node['label'] == 'MuZero'
+        assert node['title'] == title
+        assert node['meta']['title_original'] == title
+        assert second._explorer.paper_cache[pid]['display_version'] == explorer.DISPLAY_VERSION
+    finally:
+        second.close()
+
+
 def test_category_projection_primary_and_dedup(db, tmp_path):
     db.upsert_paper({'id': 'a', 'title': 'A'})
     atomic_write_json(paper_dir(tmp_path, 'a') / 'classification.json', {
@@ -183,6 +222,8 @@ def test_category_projection_primary_and_dedup(db, tmp_path):
         assert next(c for c in facets if c['id'] == 'D')['level'] == 1
         assert next(c for c in facets if c['id'] == 'chosen')['level'] == 2
         assert service.explore(category=['D'])['total'] == 1
+        scoped = service.explore(mode='group', category=['other'])
+        assert scoped['graph']['nodes'][0]['meta']['branch'] == {'key': 'other', 'label': 'F'}
     finally:
         service.close()
 
@@ -227,5 +268,80 @@ def test_tree_pagination_ancestors_and_stable_name(db, tmp_path, monkeypatch):
         ready(service)
         details = service.node_detail('c')
         assert any(not edge['primary'] and edge['evidence'] == 'Supporting text' for edge in details['motivation_edges'])
+    finally:
+        service.close()
+
+
+def test_citation_overlay_keeps_all_visible_edges_and_bounds_outside(db, tmp_path, monkeypatch):
+    from pathlib import Path
+    for i in range(20):
+        db.upsert_paper({'id': f'c{i:02}', 'title': f'Citation {i}', 'status': 'indexed'})
+    db.replace_relations('c00', 'cites', [{'dst_id': f'c{i:02}'} for i in range(1, 19)])
+    db.replace_relations('c01', 'cites', [{'dst_id': 'c00'}])
+    db.replace_relations('c09', 'cites', [{'dst_id': 'c00'}])
+    db.replace_relations('c00', 'similar', [{'dst_id': 'c19'}])
+    service = GraphService(db, tmp_path)
+    try:
+        ready(service)
+        with monkeypatch.context() as hot:
+            hot.setattr(Path, 'open', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('hot file read')))
+            result = service.citation_overlay('c00', visible=['c00', 'c00', *[f'c{i:02}' for i in range(1, 9)]])
+        graph = result['graph']
+        assert result['outside_total'] == 10 and result['outside_shown'] == 5
+        assert len(graph['nodes']) == 6
+        assert len(graph['edges']) == 15  # 8 visible + 5 outside + 2 reverse citations.
+        id_map = {n['meta']['paper_id']: n['id'] for n in graph['nodes']}
+        assert ('paper:c09', graph['focus']) in {(e['source'], e['target']) for e in graph['edges']}
+        assert all(graph['focus'] in (e['source'], e['target']) and e['role'] == 'cites' for e in graph['edges'])
+        assert 'c19' not in id_map
+        assert service.citation_overlay('missing') is None
+    finally:
+        service.close()
+
+
+def test_locate_fuzzy_titles_scopes_and_zero_hot_file_access(db, tmp_path, monkeypatch):
+    from pathlib import Path
+    db.upsert_paper({'id': 'a', 'title': 'Auditing Reward Hackability', 'status': 'indexed'})
+    db.upsert_paper({'id': 'b', 'title': 'Graph Reasoning Methods', 'status': 'indexed'})
+    atomic_write_json(paper_dir(tmp_path, 'a') / 'graph_display.json', {'label': 'AuditRL'})
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO collections(id,name,sort,created_at) VALUES('one','Reading',0,'now')")
+        conn.execute("INSERT INTO paper_collections(paper_id,collection_id) VALUES('b','one')")
+    service = GraphService(db, tmp_path)
+    try:
+        ready(service)
+        with monkeypatch.context() as hot:
+            hot.setattr(Path, 'open', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('hot file read')))
+            exact = service.locate('auditrl')
+            fuzzy = service.locate('reward hackabilty')
+            assert exact['matches'][0]['paper_id'] == 'a'
+            assert fuzzy['matches'][0]['paper_id'] == 'a'
+            assert not service.locate('reward', collection=['one'])['matches']
+            assert not service.locate('unrelated words')['matches']
+            assert not service.locate('   ')['matches']
+        assert service.explore()['total'] == 2
+    finally:
+        service.close()
+
+
+def test_tree_locator_only_returns_connected_papers_and_stable_branch(db, tmp_path, monkeypatch):
+    from carrel.graph.build import _paper_node
+    from carrel.graph.model import Graph, Edge
+    for pid in ('a', 'b', 'isolated'):
+        db.upsert_paper({'id': pid, 'title': 'Method ' + pid, 'status': 'indexed'})
+    nodes = [_paper_node(db.get_paper(pid), '') for pid in ('a', 'b', 'isolated')]
+    tree = Graph(scope='motivation_tree', nodes=nodes, edges=[Edge(nodes[0].id, nodes[1].id, 'motivation')])
+    service = GraphService(db, tmp_path)
+    monkeypatch.setattr(service, 'motivation_tree', lambda: tree)
+    try:
+        overview = ready(service, view='tree')
+        hit = service.locate('Method a', view='tree')['matches'][0]
+        assert hit['paper_id'] == 'a'
+        assert hit['branch_id'] == overview['groups'][0]['id']
+        assert not service.locate('isolated', view='tree')['matches']
+        assert overview['shown'] == 2
+        assert overview['stats']['excluded'] == 1
+        scoped = service.explore(view='tree', mode='branch')
+        assert {n['meta']['paper_id'] for n in scoped['graph']['nodes']} == {'a', 'b'}
     finally:
         service.close()

@@ -53,6 +53,17 @@ def paper_label(title: str, title_zh: str = "", glossary: dict | None = None,
             topics.append((len(base.split()) >= 2, len(base), -index, label))
     if candidates:
         return min(candidates)[3]
+    # A missing glossary must not hide a method explicitly introduced in the
+    # contributions. Require a method noun and a distinctive Latin name so
+    # generic research concepts or incidental baseline mentions are excluded.
+    introduced_names = re.finditer(
+        r'(?:^|[。；;！？!?]|(?:本文|论文|本研究)(?:中)?)\s*'
+        r'(?:提出|设计|构建|命名为)\s*(?:了|一种|一个|名为)*\s*'
+        r'([A-Za-z][A-Za-z0-9^.-]{1,40})\s*(?:算法|方法|框架|模型|系统)', evidence)
+    for introduced_name in introduced_names:
+        name = introduced_name.group(1)
+        if re.search(r'[a-z][A-Z]|[A-Z]{2,}', name):
+            return name
     if named:
         return named
     if topics:

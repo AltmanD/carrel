@@ -1,137 +1,252 @@
-/* Lightweight overview navigation. Only the active scope reaches the SVG renderer. */
+/* Research-direction navigation, with bounded graph scopes and paper location. */
 (() => {
   'use strict';
   const root = document.querySelector('[data-graph-explorer]');
   if (!root) return;
   const $ = s => root.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const preferenceKey = `carrel:explorer:v2:${root.dataset.preferenceKey}`;
   const readable = value => {
     if (value == null) return '';
     if (Array.isArray(value)) return value.map(readable).filter(Boolean).join('；');
     if (typeof value !== 'object') return String(value);
-    const labels = {text:'内容',quote:'原文',evidence:'证据',reason:'原因',source:'来源',motivation:'动机',problem:'研究问题',limitation:'局限',approach:'方法',summary:'摘要',description:'说明',title:'标题',confidence:'置信度'};
-    return Object.entries(value).filter(([k,v]) => v != null && !/(^|_)(id|ids|key|keys|path|hash|revision)$/.test(k)).map(([k,v]) => labels[k] ? `${labels[k]}: ${readable(v)}` : readable(v)).filter(Boolean).join('；');
+    return Object.entries(value).filter(([k,v]) => v != null && !/(^|_)(id|ids|key|keys|path|hash|revision)$/.test(k)).map(([,v])=>readable(v)).filter(Boolean).join('；');
   };
-  let detailTimer;
-  const viewStorageKey = preferenceKey + ':viewports';
+  const viewStorageKey = 'carrel:explorer:v3:' + root.dataset.preferenceKey + ':viewports';
   let storedViews = [];
-  try { const saved = JSON.parse(sessionStorage.getItem(viewStorageKey) || '[]'); if (Array.isArray(saved)) storedViews = saved.slice(-30).filter(x => Array.isArray(x) && typeof x[0] === 'string' && ['x','y','k'].every(k => Number.isFinite(x[1]?.[k])) && x[1].k > 0); } catch {}
-  const views = new Map(storedViews);
-  let activeURL = location.search;
+  try { storedViews = JSON.parse(sessionStorage.getItem(viewStorageKey) || '[]').slice(-30).filter(x=>Array.isArray(x) && typeof x[0]==='string' && ['x','y','k'].every(k=>Number.isFinite(x[1]?.[k])) && x[1].k>0); } catch {}
+  const views = new Map(storedViews), overviewCache = new Map();
+  let params, renderer, request, detailRequest, detailTimer, timer, serial = 0, payload, overviewData, returnState;
+  let activeURL = location.search, autoScope = !new URLSearchParams(location.search).has('mode');
+  let locateRequest, locateTimer, locateSerial = 0, locateHits = [], locating = false, pendingLocate = '';
+  let citationRequest, citationTimer, citationSerial = 0;
+  function graphOptions(extra = {}) {
+    return {managed:true,onSelect:id=>{if(!renderer?.nodes.get(id)?.meta.aggregate)select(id);},onActivate:select,onBackground:dismissSelection,...extra};
+  }
+  function closeDetail() { clearTimeout(detailTimer);detailRequest?.abort();$('[data-detail]').hidden=true; }
+  function cancelCitations() { clearTimeout(citationTimer);citationRequest?.abort();citationSerial++; }
+  function dismissSelection() {
+    closeDetail();cancelCitations();renderer?.clearSelection();root.dataset.citationState='idle';
+    if(renderer?.data?.nodes.length) renderer.setStatus('');
+  }
+  async function showCitations(id,attempt=0) {
+    clearTimeout(citationTimer);citationRequest?.abort();citationRequest=new AbortController();
+    const version=++citationSerial,signal=citationRequest.signal,controller=renderer;
+    root.dataset.citationState='loading';
+    const query=new URLSearchParams({paper_id:id,limit:'5'});
+    for(const node of controller.nodes.values()) {
+      if(!node.meta?.aggregate&&!controller.citationOverlay?.added.has(node.id)) query.append('visible',node.meta.paper_id||node.id);
+    }
+    try {
+      const data=await json('/api/graph/citations?'+query,{signal});
+      if(signal.aborted||version!==citationSerial||controller!==renderer) return;
+      if(data.status==='building') {
+        if(attempt>=8) throw new Error('引用关系仍在准备，请稍后重新选择论文');
+        citationTimer=setTimeout(()=>{if(!signal.aborted)showCitations(id,attempt+1);},Math.max(500,data.retry_after_ms||700));return;
+      }
+      controller.setCitationOverlay(data.graph);root.dataset.citationState='ready';
+      const total=data.graph.edges.length,outside=data.outside_shown||0;
+      controller.setStatus(total?'引用 '+total+' 条'+(outside?' · 图外 '+outside+'/'+data.outside_total+' 篇':''):'暂无已收录的引用关系');
+    } catch(error) {
+      if(!signal.aborted&&version===citationSerial) {root.dataset.citationState='error';controller.setStatus(error.message,{error:true});}
+    }
+  }
+  const defaultLimit = () => params.get('view') === 'tree' ? 12 : 24;
   function rememberView() {
     if (!renderer?.transform) return;
-    views.delete(activeURL); views.set(activeURL, {...renderer.transform});
-    while (views.size > 30) views.delete(views.keys().next().value);
-    try { sessionStorage.setItem(viewStorageKey, JSON.stringify([...views])); } catch {}
+    views.delete(activeURL); views.set(activeURL,{...renderer.transform});
+    if(views.size>30) views.delete(views.keys().next().value);
+    try {sessionStorage.setItem(viewStorageKey,JSON.stringify([...views]));} catch {}
   }
-  let params, request, detailRequest, serial = 0, timer, renderer, payload, facets = {}, returnState;
-  const defaultLimit = () => params.get('mode') === 'neighbors' ? 5 : params.get('mode') === 'branch' ? 12 : 24;
   function restore() {
     params = new URLSearchParams(location.search);
     if (!['graph','tree'].includes(params.get('view'))) params.set('view','graph');
-    if (!params.has('group_by')) { try { params.set('group_by', localStorage.getItem(preferenceKey + ':' + params.get('view')) || 'category'); } catch { params.set('group_by','category'); } }
     if (!['overview','group','neighbors','branch'].includes(params.get('mode'))) params.set('mode','overview');
+    // Scope is expressed by direction and optional reading collection. Search locates nodes only.
+    ['q','keyword','keywords_match','sort','group_by'].forEach(k => params.delete(k));
+    params.set('group_by','category');
     if (!params.has('limit')) params.set('limit',defaultLimit());
     syncControls();
   }
   function syncControls() {
+    const tree = params.get('view') === 'tree'; root.dataset.view = tree ? 'tree' : 'graph';
+    root.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed',String(b.dataset.view === params.get('view'))));
     $('[data-cites]').checked = params.get('include_cites') === '1';
-    $('[data-edge-limit]').value = params.get('edge_limit') || '40';
-    for (const name of ['group_by','q','sort','keywords_match']) $(`[name=${name}]`).value = params.get(name) || {sort:'recent',keywords_match:'any',q:'',group_by:'category'}[name];
-    root.querySelectorAll('[data-view]').forEach(b => { b.classList.toggle('on', b.dataset.view === params.get('view')); b.setAttribute('aria-pressed', b.dataset.view === params.get('view')); });
     $('[data-similar]').checked = params.get('include_similar') === '1';
     $('[data-context]').checked = params.get('include_context') === '1';
+    $('[data-edge-limit]').value = params.get('edge_limit') || '40';
     $('[data-neighbor-limit]').value = params.get('mode') === 'neighbors' ? params.get('limit') : '5';
+    $('[data-collection-scope]').value = params.get('collection') || '';
   }
-  function navigate(changes, reset = false) {
+  function navigate(changes, reset = false, replace = false) {
     rememberView();
-    if (reset) { ['group_id','focus','offset','include_context'].forEach(k => params.delete(k)); params.set('mode','overview'); params.set('limit','24'); returnState = null; }
-    Object.entries(changes).forEach(([k,v]) => { params.delete(k); (Array.isArray(v) ? v : [v]).forEach(x => { if (x !== '' && x != null) params.append(k,x); }); });
-    history.pushState({},'',`${location.pathname}?${params}`); activeURL = location.search; syncControls(); load();
+    if (reset) { ['group_id','focus','offset','include_context','category'].forEach(k=>params.delete(k)); params.set('mode','overview'); params.set('limit',defaultLimit()); returnState = null; }
+    Object.entries(changes).forEach(([k,v]) => { params.delete(k); (Array.isArray(v)?v:[v]).forEach(x=>{if(x!=='' && x!=null) params.append(k,x);}); });
+    history[replace?'replaceState':'pushState']({},'',location.pathname+'?'+params); activeURL = location.search;
+    syncControls(); load();
   }
-  function feedback(message, failed = false) { $('[data-feedback]').textContent = message; $('[data-retry]').hidden = !failed; }
+  function feedback(message, state = 'ready') { $('[data-feedback]').textContent = message; $('.explorer-state').dataset.state = state; $('[data-retry]').hidden = state !== 'error'; }
   async function json(url, options = {}) {
-    const response = await fetch(url, {credentials:'same-origin', ...options});
-    const data = await response.json();
-    if (!response.ok || data.status === 'error') throw new Error(data.message || data.error?.message || data.detail || '请求失败，请重试');
+    const response = await fetch(url,{credentials:'same-origin',...options}); const data = await response.json();
+    if (!response.ok || data.status === 'error') throw new Error(data.message || data.error?.message || data.detail || '加载失败，请重试');
     return data;
   }
+  function overviewParams() {
+    const scope = new URLSearchParams({view:params.get('view'),mode:'overview',group_by:'category'});
+    params.getAll('collection').forEach(c=>scope.append('collection',c)); return scope;
+  }
   async function load() {
-    clearTimeout(timer); clearTimeout(detailTimer); request?.abort(); detailRequest?.abort(); $('[data-detail]').hidden = true;
-    request = new AbortController(); const version = ++serial;
-    root.setAttribute('aria-busy','true'); feedback('正在加载当前范围…');
+    dismissSelection();
+    clearTimeout(timer); clearTimeout(detailTimer); request?.abort(); detailRequest?.abort(); locateRequest?.abort();
+    $('[data-detail]').hidden = true; closeLocate();
+    request = new AbortController(); const version = ++serial; root.setAttribute('aria-busy','true'); feedback('加载中','loading');
     try {
-      const data = await json('/api/graph/explore?' + params, {signal:request.signal});
+      const overviewQuery = overviewParams().toString(), cached = overviewCache.get(overviewQuery);
+      if (params.get('mode') === 'overview') {
+        payload = await json('/api/graph/explore?'+params,{signal:request.signal});
+        overviewData = params.get('category') ? (cached || await json('/api/graph/explore?'+overviewQuery,{signal:request.signal})) : payload;
+      } else {
+        const responses = await Promise.all([
+          json('/api/graph/explore?'+params,{signal:request.signal}),
+          cached ? Promise.resolve(cached) : json('/api/graph/explore?'+overviewQuery,{signal:request.signal})
+        ]); [payload,overviewData] = responses;
+      }
       if (version !== serial) return;
-      if (data.status === 'building') { feedback('正在建立资料库快照…'); timer = setTimeout(load,Math.max(300,data.retry_after_ms || 700)); return; }
-      payload = data; render(data); feedback(data.stale || data.rebuilding ? '正在更新；当前显示上次有效快照。' : '');
-      if (data.stale || data.rebuilding) timer = setTimeout(load,1500);
-    } catch (error) { if (error.name !== 'AbortError' && version === serial) feedback(error.message,true); }
-    finally { if (version === serial) root.setAttribute('aria-busy','false'); }
+      if (payload.status === 'building' || overviewData.status === 'building') { feedback('准备图谱','loading'); timer=setTimeout(load,Math.max(300,payload.retry_after_ms||700)); return; }
+      overviewCache.set(overviewQuery,overviewData);
+      if (autoScope && params.get('mode') === 'overview') {
+        autoScope = false;
+        if (params.get('view') === 'tree') {
+          const largest = [...(payload.groups || [])].sort((a,b)=>b.count-a.count)[0];
+          if (largest) { navigate({mode:'branch',group_id:largest.id,limit:12},false,true); return; }
+        } else {
+          const largest = topDirections()[0];
+          if (largest) { navigate({mode:'group',category:largest.id,limit:24},false,true); return; }
+        }
+      }
+      renderNavigation(); await render(payload);
+      if (version !== serial) return;
+      const updating = payload.stale || payload.rebuilding || overviewData.stale || overviewData.rebuilding;
+      feedback(updating?'更新中':'已就绪',updating?'updating':'ready');
+      if (updating) { overviewCache.delete(overviewQuery); timer=setTimeout(load,1500); }
+    } catch(error) { if (error.name !== 'AbortError' && version === serial) feedback(error.message,'error'); }
+    finally { if(version === serial) root.setAttribute('aria-busy','false'); }
   }
-  function renderFacets(data) {
-    if (data.facets) facets = data.facets;
-    $('[data-facets]').innerHTML = [['category','categories','分类'],['collection','collections','阅读集合'],['keyword','keywords','关键词']].map(([key,list,title]) => {
-      const selected = params.getAll(key); const items = [...(facets[list] || [])];
-      if (key === 'category') items.sort((a,b) => String(a.parent || a.label).localeCompare(String(b.parent || b.label),'zh') || (a.level || 2) - (b.level || 2));
-      selected.forEach(id => { if (!items.some(x => String(x.id) === id)) items.push({id,label:id}); });
-      return `<fieldset><legend>${title}</legend>${items.map(x => `<label class="${key === 'category' ? 'facet-level-' + (x.level || 2) : ''}"><input type="checkbox" data-facet="${key}" value="${esc(x.id)}" ${selected.includes(String(x.id)) ? 'checked' : ''}>${key === 'category' ? (x.level === 1 ? '一级 ? ' : '二级 ? ') : ''}${esc(x.parent ? x.parent + ' / ' : '')}${esc(x.label)}${x.count == null ? '' : ' (' + esc(x.count) + ')'}</label>`).join('') || '<p>暂无选项</p>'}</fieldset>`;
-    }).join('');
-    $('[data-chips]').innerHTML = ['category','collection','keyword'].flatMap(k => params.getAll(k).map(v => { const item = (facets[{category:'categories',collection:'collections',keyword:'keywords'}[k]] || []).find(x => String(x.id) === v); return `<button class="btn tiny" data-remove="${k}" data-value="${esc(v)}" aria-label="移除 ${esc(item?.label || v)}">${esc(item?.label || v)} ×</button>`; })).join('');
+  const sortedGroups = () => [...(overviewData?.groups || [])].filter(g=>g.count>0).sort((a,b)=>b.count-a.count || String(a.label).localeCompare(String(b.label),'zh'));
+  const directionParent = c => c?.parent || c?.id || '';
+  function topDirections() {
+    const categories = overviewData?.facets?.categories || [];
+    const result = categories.filter(c=>c.level === 1 || !c.parent).map(c=>({...c}));
+    return result.filter(c=>c.count>0).sort((a,b)=>b.count-a.count || String(a.label).localeCompare(String(b.label),'zh'));
   }
-  function render(data) {
-    const overview = params.get('mode') === 'overview', tree = params.get('view') === 'tree';
-    $('[data-branch-label-form]').hidden = params.get('mode') !== 'branch';
-    $('[data-branch-label]').value = data.scope_label || '';
-    $('[data-branch-label-feedback]').textContent = '';
-    $('[data-similar]').parentElement.hidden = tree;
-    renderFacets(data); $('[data-cards]').hidden = !overview; $('[data-local]').hidden = overview; $('[data-back]').hidden = overview;
-    $('[data-group-edges]').hidden = tree || params.get('mode') !== 'group';
-    $('[data-print]').hidden = !overview; $('[data-empty-toggle]').hidden = !overview || params.get('group_by') !== 'collection';
-    $('[data-neighbor-control]').hidden = params.get('mode') !== 'neighbors'; $('[data-context-control]').hidden = !tree;
-    $('[data-summary]').textContent = params.get('mode') === 'neighbors' ? `展示 ${Math.max(0,(data.shown || 0) - 1)} / ${data.neighbor_total ?? data.total ?? 0} 篇相关论文` : `当前 ${data.shown ?? 0} / ${data.total ?? 0} 篇论文${data.omitted ? ` · 尚未展开 ${data.omitted} 篇` : ''}`;
-    $('[data-snapshot]').textContent = data.generated_at ? `快照更新：${new Date(data.generated_at).toLocaleString('zh-CN', {hour12:false})}` : '';
-    if (Number(params.get('offset')) > 0 && params.get('mode') !== 'neighbors') {
-      const start = Number(params.get('offset'));
-      $('[data-summary]').textContent = `当前第 ${start + 1}–${start + (data.shown || 0)} / ${data.total || 0} 篇论文`;
-    }
-    if (data.context_shown) $('[data-summary]').textContent += ' · 另显示 ' + data.context_shown + ' 篇上下文';
-    $('[data-notes]').replaceChildren(...(data.notes || []).map(note => { const p = document.createElement('p'); p.textContent = typeof note === 'string' ? note : JSON.stringify(note); return p; }));
-    if (overview) {
-      $('[data-notes]').insertAdjacentHTML('beforeend','<details class="explorer-help"><summary>如何理解处理进度</summary><p>每篇论文只计入最高已完成的档位：收录、速览、笔记或全文。使用自定义处理选项时，部分内容可能已完成，但尚未满足下一档的全部要求。这些数字表示处理进度，与是否读过无关。</p></details>');
-      if (data.stats?.tasks) $('[data-notes]').insertAdjacentHTML('beforeend', `<p>任务状态：待处理 ${data.stats.tasks.pending || 0} · 失败 ${data.stats.tasks.failed || 0}</p>`);
-      if (tree && !data.shown) $('[data-notes]').insertAdjacentHTML('beforeend', `<p>${esc(data.empty_reason || '当前范围尚无已确认的动机主线，请检查分析完成状态及筛选条件。')}</p>`);
-      renderer?.destroy?.(); renderer = null;
-      const candidates = [...(data.groups || [])];
-      if (!tree && params.get('group_by') === 'collection') for (const c of facets.collections || []) { if (!candidates.some(g => String(g.id) === String(c.id))) candidates.push({...c,count:0}); }
-      const groups = candidates.filter(g => $('[data-empty]').checked || g.count || params.get('group_by') !== 'collection');
-      if (params.get('sort') === 'name') groups.sort((a,b) => String(a.label).localeCompare(String(b.label),'zh'));
-      if (params.get('sort') === 'depth') { const depth = g => (g.coverage?.full || 0)*3+(g.coverage?.notes || 0)*2+(g.coverage?.skim || 0); groups.sort((a,b)=>depth(b)-depth(a)); }
-      $('[data-cards]').innerHTML = groups.map(g => `<article class="explorer-card"><p class="eyebrow">${esc(g.parent || (tree ? '研究主线' : '研究方向'))}</p><h2>${esc(g.label)}</h2><p class="explorer-number">${esc(g.count)} <small>篇论文</small></p>${g.coverage ? `<p class="explorer-coverage">收录 ${g.coverage.indexed || 0} · 速览 ${g.coverage.skim || 0} · 笔记 ${g.coverage.notes || 0} · 全文 ${g.coverage.full || 0}</p>` : ''}<ul>${(g.representatives || []).slice(0,3).map(p => `<li>${esc(p.label || p.title)}</li>`).join('')}</ul><button class="btn" data-group="${esc(g.id)}">${tree ? '展开主线' : '查看全部'} ${esc(g.count)} 篇</button></article>`).join('') || '<p>当前范围没有可展示内容。可调整筛选或查看论文关系。</p>';
-      $('[data-cards]').querySelectorAll('.explorer-card').forEach((card,i) => { const hue = [...String(groups[i].category_id || groups[i].id)].reduce((n,c)=>(n*31+c.charCodeAt(0))%360,0); card.style.borderTop = `4px solid hsl(${hue} 32% 48%)`; });
-      if (tree) $('[data-notes]').insertAdjacentHTML('beforeend','<p>主线由已有动机证据连接；阅读集合仅限定范围，不改变前驱关系。</p>');
-      return;
-    }
-    const graphRoot = $('[data-renderer]'); graphRoot.dataset.graphScope = tree ? 'motivation_tree' : 'library';
-    graphRoot.dataset.exportCaption = $('[data-summary]').textContent;
-    if (!window.CarrelGraph?.mount) throw new Error('图谱渲染器尚未就绪，请重试');
-    const scopeCaption = [params.get('view') === 'tree' ? '动机脉络' : '论文关系', ...root.querySelector('[data-chips]').textContent.split('×').map(x=>x.trim()).filter(Boolean)].join(' · ');
-    const graphData = {...(data.graph || {nodes:[],edges:[],scope:graphRoot.dataset.graphScope}), boundary:data.boundary || [], omitted:data.omitted || 0, scope_label:data.scope_label || scopeCaption, mode:params.get('mode')};
-    renderer = window.CarrelGraph.mount(graphRoot,graphData,{managed:true,onSelect:select,boundary:data.boundary || [],include_cites:params.get('mode') === 'neighbors' || params.get('include_cites') === '1',include_similar:params.get('include_similar') === '1',edge_limit:Number(params.get('edge_limit') || 40)});
-    const mounted = renderer, savedView = views.get(activeURL);
-    Promise.resolve(renderer.ready).then(() => { if (mounted === renderer && savedView) { renderer.transform = {...savedView}; renderer.applyTransform?.(); } });
-    const remaining = Math.max(0, (data.total || 0) - Number(params.get('offset') || 0) - (data.shown || 0));
-    $('[data-more]').hidden = !remaining || params.get('mode') === 'neighbors';
-    $('[data-more]').textContent = `展开更多（剩余 ${remaining} 篇）`;
-    $('[data-boundary]').innerHTML = (data.boundary || []).map(b => `<p>${esc(b.label || '前驱论文')} · ${b.reason === 'pagination' ? '前驱在其他分页' : '前驱在筛选范围外'} <button class="btn tiny" data-predecessor="${esc(b.predecessor_id)}">查看前驱详情</button><button class="btn tiny" data-show-context>显示前驱上下文</button></p>`).join('');
-    if (params.get('focus')) showDetail(params.get('focus'));
+  function currentDirection() {
+    const category = params.get('category');
+    if (category) return (overviewData?.facets?.categories || []).find(c=>String(c.id)===category) || {id:category,label:category};
+    const group = sortedGroups().find(g=>String(g.id)===params.get('group_id'));
+    if (!group) return null;
+    return (overviewData?.facets?.categories || []).find(c=>c.label === (group.parent || group.label)) || {id:group.parent||group.id,label:group.parent||group.label,parent:''};
+  }
+  function scopeButton(id,label,count,attr,active=false) { return '<button type="button" class="explorer-scope-button'+(active?' active':'')+'" '+attr+'="'+esc(id)+'" aria-pressed="'+active+'">'+esc(label)+(count==null?'':'<span>'+count+'</span>')+'</button>'; }
+  function renderNavigation() {
+    const current = currentDirection(), parent = directionParent(current), overview = params.get('mode') === 'overview';
+    $('[data-directions]').innerHTML = scopeButton('','总览',null,'data-overview',overview&&!params.get('category')) + topDirections().map(c=>scopeButton(c.id,c.label,c.count,'data-direction',parent===c.id || parent===c.label)).join('');
+    const children = (overviewData?.facets?.categories || []).filter(c=>c.parent && (c.parent===parent || c.parent===current?.label) && c.id!==parent && c.count>0).sort((a,b)=>b.count-a.count);
+    $('[data-subdirections]').hidden = !children.length;
+    $('[data-subdirections]').innerHTML = children.map(c=>scopeButton(c.id,c.label,c.count,'data-direction',params.get('category')===String(c.id))).join('');
+    const collections = (overviewData?.facets?.collections || []).filter(c=>c.id!=='uncollected' && c.count>0);
+    $('[data-collection-control]').hidden = !collections.length;
+    $('[data-collection-scope]').innerHTML = '<option value="">全部集合</option>'+collections.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.label)+'</option>').join('');
+    $('[data-collection-scope]').value = params.get('collection') || '';
+  }
+  function openDirection(id) {
+    autoScope=false;
+    returnState=null;
+    navigate({category:id,mode:params.get('view')==='tree'?'overview':'group',group_id:'',focus:'',offset:'',limit:defaultLimit()});
+  }
+  function aggregateGraph() {
+    const tree=params.get('view')==='tree', category=params.get('category');
+    const groups=tree?[...(payload?.groups || [])].sort((a,b)=>b.count-a.count):topDirections();
+    return {scope:'library',mode:'aggregate',revision:overviewData.revision,nodes:groups.map((g,i)=>({
+      id:'aggregate:'+g.id,role:'paper',label:g.label,title:g.label,sort_key:String(i).padStart(6,'0'),
+      meta:{aggregate:true,count:g.count,group_id:g.id,branch:{key:tree?(g.parent||g.id):g.id,label:tree?g.parent:g.label},scope_label:category||'总览'}
+    })),edges:[],scope_label:tree?(currentDirection()?.label||'研究主线'):'研究方向总览'};
+  }
+  async function render(data) {
+    const version = serial;
+    const overview=params.get('mode')==='overview', tree=params.get('view')==='tree';
+    const graphData=overview?aggregateGraph():{...data.graph,boundary:data.boundary||[],omitted:data.omitted||0,scope_label:data.scope_label,mode:params.get('mode')};
+    $('[data-scope-title]').textContent=overview?(currentDirection()?.label || '研究方向总览'):(!tree && params.get('category') ? currentDirection()?.label : data.scope_label) || '全部论文';
+    $('[data-summary]').textContent=overview?(tree?graphData.nodes.length+' 条主线 · '+(data.shown||0)+' 篇':(data.total||0)+' 篇'):((data.shown||0)+(data.omitted?' / '+data.total:'')+' 篇');
+    $('[data-back]').hidden=!returnState;
+    $('[data-branch-label-form]').hidden=params.get('mode')!=='branch'; $('[data-branch-label]').value=data.scope_label||''; $('[data-branch-label-feedback]').textContent='';
+    $('[data-group-edges]').hidden=overview||tree||params.get('mode')==='neighbors'; $('[data-similar]').parentElement.hidden=overview||tree;
+    $('[data-neighbor-control]').hidden=params.get('mode')!=='neighbors'; $('[data-context-control]').hidden=overview||!tree;
+    $('[data-snapshot]').textContent=data.generated_at?'更新于 '+new Date(data.generated_at).toLocaleString('zh-CN',{hour12:false}):'';
+    const graphRoot=$('[data-renderer]'); graphRoot.dataset.exportCaption=$('[data-scope-title]').textContent; graphRoot.dataset.aggregate=String(overview);
+    if(!window.CarrelGraph?.mount) throw new Error('图谱渲染器尚未就绪');
+    renderer=window.CarrelGraph.mount(graphRoot,graphData,graphOptions({include_cites:params.get('include_cites')==='1',include_similar:params.get('include_similar')==='1',edge_limit:Number(params.get('edge_limit')||40)}));
+    const mounted=renderer; await renderer.ready; if(mounted!==renderer || version!==serial) return;
+    renderer.layers.cites = params.get('mode') === 'neighbors' || params.get('include_cites') === '1';
+    renderer.layers.similar = params.get('include_similar') === '1';
+    renderer.applyEdgeVisibility();
+    const saved=views.get(activeURL); if(saved) { renderer.transform={...saved}; renderer.applyTransform(); }
+    const remaining=Math.max(0,(data.total||0)-Number(params.get('offset')||0)-(data.shown||0));
+    $('[data-more]').hidden=overview||!remaining||params.get('mode')==='neighbors'; $('[data-more]').textContent='展开更多（'+remaining+' 篇）';
+    $('[data-boundary]').innerHTML=(data.boundary?.length?'<button class="btn tiny" type="button" data-show-context>补充 '+data.boundary.length+' 篇前驱</button>':'');
+    $('[data-legend]').innerHTML=overview?'<span>'+(tree?'点击主线展开':'点击方向展开')+'</span>':tree?'<span class="explorer-legend-line"></span><span>前驱 → 改进 / 扩展</span>':'<span>按研究方向分区</span>'+(params.get('include_cites')==='1'?'<span class="explorer-legend-line"></span><span>引用 → 被引用</span>':'');
+    renderMessage();
+    if(!graphData.nodes.length) renderer.setStatus(tree?'当前方向暂无可展示的语义脉络':'当前范围暂无论文');
+    if(pendingLocate) { const id=pendingLocate; pendingLocate=''; centerPaper(id); }
+  }
+  function renderMessage() {
+    const stats=overviewData?.stats||{}, tasks=stats.tasks||{}, tree=params.get('view')==='tree';
+    const excluded=tree?(stats.excluded||0):0, notes=overviewData?.notes||[], issue=tasks.pending||tasks.failed||excluded||stats.tree_error||stats.tree_rebuilding||notes.length;
+    $('[data-processing-message]').hidden=!tree&&!issue;
+    $('[data-processing-summary]').textContent=tree?'脉络依据论文语义整理'+(issue?' · 部分内容暂未纳入':''):'部分论文尚未完成处理';
+    const items=[];
+    if(tree) items.push('按论文声明的动机与方法判断递进关系，每篇论文只保留主要前驱。没有可靠关系的论文暂不进入脉络图。');
+    if(excluded) items.push(excluded+' 篇论文尚未形成可靠主线。');
+    if(tasks.pending||tasks.failed) items.push('待处理 '+(tasks.pending||0)+' 项 · 失败 '+(tasks.failed||0)+' 项。');
+    if(stats.tree_rebuilding) items.push('语义脉络正在更新，当前图仍可浏览。');
+    if(stats.tree_error) items.push(stats.tree_error);
+    items.push(...notes.map(readable));
+    $('[data-processing-details]').replaceChildren(...[...new Set(items)].map(text=>{const p=document.createElement('p');p.textContent=text;return p;}));
   }
   function select(id) {
-    if (!id) return;
-    if (params.get('view') === 'tree') { rememberView(); params.set('focus',id); history.replaceState({},'',`${location.pathname}?${params}`); activeURL = location.search; showDetail(id); return; }
-    if (params.get('mode') !== 'neighbors') returnState = new URLSearchParams(params);
-    navigate({mode:'neighbors',focus:id,limit:5});
+    const node=renderer?.nodes.get(id);
+    if(node?.meta.aggregate) { autoScope=false; if(params.get('view')==='tree') navigate({mode:'branch',group_id:node.meta.group_id,focus:'',limit:12}); else openDirection(node.meta.group_id); return; }
+    if(!id || locating) return;
+    showDetail(node?.meta.paper_id||id);
+    if(params.get('view')==='graph') showCitations(node?.meta.paper_id||id);
+  }
+  function centerPaper(id) {
+    const node=[...(renderer?.nodes.values()||[])].find(n=>!n.meta.aggregate&&(n.id===id||n.meta.paper_id===id)); if(!node||node.hidden) return false;
+    locating=true; renderer.select(node.id); locating=false;
+    const rect=renderer.canvas.getBoundingClientRect(); const k=Math.min(1.15,Math.max(0.85,renderer.transform.k));
+    renderer.transform={k,x:rect.width/2-node.x*k,y:rect.height/2-node.y*k}; renderer.userZoomed=true; renderer.applyTransform();
+    $('[data-locate-feedback]').textContent='已定位 '+node.label; return true;
+  }
+  function closeLocate() { $('[data-locate-results]').hidden=true; $('[data-locate-input]').setAttribute('aria-expanded','false'); }
+  async function findPapers() {
+    locateRequest?.abort(); const version=++locateSerial, term=$('[data-locate-input]').value.trim();
+    locateHits=[]; if(!term) {closeLocate();return;}
+    locateRequest=new AbortController();
+    $('[data-locate-results]').hidden=false; $('[data-locate-input]').setAttribute('aria-expanded','true'); $('[data-locate-results]').textContent='正在定位…';
+    try {
+      const query=new URLSearchParams({q:term,view:params.get('view'),limit:'8'});
+      if(params.get('collection')) query.set('collection',params.get('collection'));
+      const result=await json('/api/graph/locate?'+query,{signal:locateRequest.signal}); if(version!==locateSerial) return;
+      locateHits=result.matches||[];
+      $('[data-locate-results]').innerHTML=locateHits.map((p,i)=>'<button type="button" data-locate-hit="'+i+'"><strong>'+esc(p.label)+'</strong><small>'+esc(p.title)+'</small><span>'+esc(p.direction||'')+'</span></button>').join('')||'<p>'+(result.status==='building'?'图谱正在准备，请稍后定位':'没有匹配的论文')+'</p>';
+    } catch(error) {if(error.name!=='AbortError'&&version===locateSerial) $('[data-locate-results]').textContent=error.message;}
+  }
+  async function locatePaper(hit) {
+    if(!hit) return; closeLocate(); $('[data-locate-input]').value=hit.label;
+    if(centerPaper(hit.paper_id)) return;
+    returnState=new URLSearchParams(params); pendingLocate=hit.paper_id;
+    if(params.get('view')==='tree') {
+      if(!hit.branch_id) {pendingLocate='';$('[data-locate-feedback]').textContent='这篇论文尚未形成语义主线';return;}
+      navigate({mode:'branch',group_id:hit.branch_id,focus:hit.paper_id,category:'',offset:'',limit:12});
+    } else navigate({mode:'neighbors',group_id:'',focus:hit.paper_id,category:'',offset:'',limit:5});
   }
   async function showDetail(id, attempt = 0) {
     clearTimeout(detailTimer);
@@ -146,7 +261,7 @@
       const collections = meta.collections || data.collections || [], tags = meta.tags || data.keywords || [];
       const relations = data.relations || meta.relations || {};
       const relationHTML = Object.entries({cites:'引用',cited_by:'被引用',similar:'相似论文'}).map(([key,label]) => `<h4>${label} · ${data.counts?.[key] ?? relations[key]?.length ?? 0}</h4><ul>${(relations[key] || []).map(r => `<li><a href="/papers/${encodeURIComponent(r.paper_id)}">${esc(r.label || '相关论文')}</a>${r.evidence?.length ? `<details><summary>查看证据</summary><pre>${esc(readable(r.evidence))}</pre></details>` : ''}</li>`).join('')}</ul>`).join('');
-      $('[data-detail-body]').innerHTML = `<h2>${esc(node.title || meta.title || node.label || '论文详情')}</h2><a class="btn" href="/papers/${encodeURIComponent(id)}">打开论文</a><form data-label-form><label>图中展示名<input name="label" maxlength="60" value="${esc(node.label || meta.label || '')}"></label><button class="btn">保存展示名</button><p data-label-feedback role="status"></p></form><h3>阅读集合</h3>${collections.map(c => `<button class="btn tiny" data-collection="${esc(c.id)}">${esc(c.name || c.label || '阅读集合')}</button>`).join('') || '<p>未加入集合</p>'}<h3>关键词</h3><p>${tags.map(t => esc(typeof t === 'string' ? t : t.label || t.tag)).join(' · ') || '暂无关键词'}</p><h3>关系与证据</h3>${relationHTML}${data.motivation || meta.motivation ? `<h3>动机</h3><pre>${esc(readable(data.motivation || meta.motivation))}</pre>` : ''}`;
+      $('[data-detail-body]').innerHTML = `<h2>${esc(node.title || meta.title || node.label || '论文详情')}</h2><a class="btn" href="/papers/${encodeURIComponent(id)}">打开论文</a><button type="button" class="btn" data-related="${esc(id)}">相关论文</button><form data-label-form><label>图中展示名<input name="label" maxlength="60" value="${esc(node.label || meta.label || '')}"></label><button class="btn">保存展示名</button><p data-label-feedback role="status"></p></form><h3>阅读集合</h3>${collections.map(c => `<button class="btn tiny" data-collection="${esc(c.id)}">${esc(c.name || c.label || '阅读集合')}</button>`).join('') || '<p>未加入集合</p>'}<h3>关键词</h3><p>${tags.map(t => esc(typeof t === 'string' ? t : t.label || t.tag)).join(' · ') || '暂无关键词'}</p><h3>关系与证据</h3>${relationHTML}${data.motivation || meta.motivation ? `<h3>动机</h3><pre>${esc(readable(data.motivation || meta.motivation))}</pre>` : ''}`;
       if (data.motivation_edges?.length) {
         const section = document.createElement('section');
         section.innerHTML = '<h3>动机递进关系</h3>';
@@ -173,46 +288,39 @@
       };
     } catch(error) { if (!signal.aborted) { if (!attempt) $('[data-detail-body]').textContent = error.message; else { const status = document.createElement('p'); status.textContent = error.message; $('[data-detail-body]').append(status); } const retry = document.createElement('button'); retry.className='btn'; retry.textContent='重试详情'; retry.onclick=()=>showDetail(id); $('[data-detail-body]').append(retry); } }
   }
-  $('[data-branch-label-form]').onsubmit = async event => {
-    event.preventDefault(); const button = event.target.querySelector('button');
-    const branchId = params.get('group_id'), label = $('[data-branch-label]').value.trim();
-    if (!branchId) return;
-    button.disabled = true;
-    try {
-      await json('/api/graph/branch-label',{method:'POST',headers:{'Content-Type':'application/json','X-Carrel':'1'},body:JSON.stringify({branch_id:branchId,label})});
-      if (params.get('group_id') === branchId) { rememberView(); await load(); $('[data-branch-label-feedback]').textContent = '主线名称已保存'; }
-    } catch(error) { $('[data-branch-label-feedback]').textContent = error.message; }
-    finally { button.disabled = false; }
+  $('[data-branch-label-form]').onsubmit=async event=>{
+    event.preventDefault(); const button=event.target.querySelector('button');button.disabled=true;
+    try {await json('/api/graph/branch-label',{method:'POST',headers:{'Content-Type':'application/json','X-Carrel':'1'},body:JSON.stringify({branch_id:params.get('group_id'),label:$('[data-branch-label]').value.trim()})});overviewCache.clear();await load();$('[data-branch-label-feedback]').textContent='已保存';}
+    catch(error){$('[data-branch-label-feedback]').textContent=error.message;}finally{button.disabled=false;}
   };
-  $('[data-explorer-form]').onsubmit = e => { e.preventDefault(); navigate({q:$('[name=q]').value.trim()},true); };
-  $('[data-explorer-form]').onchange = e => {
-    const input = e.target;
-    if (input.dataset.facet) navigate({[input.dataset.facet]:Array.from(root.querySelectorAll(`[data-facet=${input.dataset.facet}]:checked`),x=>x.value)},true);
-    else if (['group_by','sort','keywords_match'].includes(input.name)) { if (input.name === 'group_by') try { localStorage.setItem(preferenceKey + ':' + params.get('view'),input.value); } catch {} navigate({[input.name]:input.value},true); }
-  };
-  root.addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    if (b.dataset.predecessor) showDetail(b.dataset.predecessor);
-    if (b.hasAttribute('data-show-context')) navigate({include_context:'1'});
-    if (b.dataset.view) navigate({view:b.dataset.view},true);
-    if (b.dataset.group) navigate({group_id:b.dataset.group,mode:params.get('view') === 'tree' ? 'branch' : 'group',limit:params.get('view') === 'tree' ? 12 : 24});
-    if (b.dataset.remove) navigate({[b.dataset.remove]:params.getAll(b.dataset.remove).filter(v=>v!==b.dataset.value)},true);
-    if (b.dataset.collection) navigate({collection:[b.dataset.collection]},true);
+  root.addEventListener('click',e=>{
+    const b=e.target.closest('button');if(!b)return;
+    if(b.hasAttribute('data-view')) {autoScope=true;returnState=null;const direction=params.get('category');navigate({view:b.dataset.view,category:direction},true);}
+    if(b.hasAttribute('data-overview')) {autoScope=false;navigate({},true);}
+    if(b.hasAttribute('data-direction')) openDirection(b.dataset.direction);
+    if(b.hasAttribute('data-locate-hit')) locatePaper(locateHits[Number(b.dataset.locateHit)]);
+    if(b.dataset.related) {returnState=new URLSearchParams(params);navigate({mode:'neighbors',focus:b.dataset.related,group_id:'',category:'',offset:'',limit:5});}
+    if(b.hasAttribute('data-show-context')) navigate({include_context:'1'});
+    if(b.dataset.collection) {autoScope=true;navigate({collection:b.dataset.collection},true);}
   });
-  $('[data-back]').onclick = () => { if (params.get('mode') === 'neighbors') { if (returnState) { params = returnState; returnState=null; navigate({}); } else navigate({mode:'group',focus:'',limit:24}); } else navigate({},true); };
-  $('[data-more]').onclick = () => { const limit = Number(params.get('limit') || defaultLimit()); navigate(limit >= 200 ? {offset:Number(params.get('offset') || 0) + 200,limit:defaultLimit()} : {limit:Math.min(200,limit + (params.get('view') === 'tree' ? 12 : 24))}); };
-  $('[data-neighbor-limit]').onchange = e => navigate({limit:e.target.value});
-  $('[data-similar]').onchange = e => navigate({include_similar:e.target.checked ? '1' : '0'});
-  $('[data-cites]').onchange = e => navigate({include_cites:e.target.checked ? '1' : '0'});
-  $('[data-edge-limit]').onchange = e => navigate({edge_limit:e.target.value});
-  $('[data-context]').onchange = e => navigate({include_context:e.target.checked ? '1' : '0'});
-  $('[data-detail-close]').onclick = () => { clearTimeout(detailTimer); detailRequest?.abort(); $('[data-detail]').hidden = true; };
-  $('[data-empty]').onchange = () => payload && render(payload);
-  $('[data-retry]').onclick = load; $('[data-print]').onclick = () => window.print();
-  $('[data-refresh]').onclick = async () => { try { await json('/api/graph/refresh',{method:'POST',headers:{'X-Carrel':'1'}}); load(); } catch(error) { feedback(error.message,true); } };
-  $('[data-reset]').onclick = () => { try { ['graph','tree'].forEach(v=>localStorage.removeItem(preferenceKey + ':' + v)); } catch {} params = new URLSearchParams({view:params.get('view'),group_by:'category',mode:'overview',limit:'24'}); navigate({}); };
-  window.addEventListener('popstate',()=>{rememberView();activeURL=location.search;restore();load();});
-  window.addEventListener('pagehide',()=>{rememberView();clearTimeout(timer);clearTimeout(detailTimer);request?.abort();detailRequest?.abort();renderer?.destroy?.();});
-  document.addEventListener('carrel:organization-changed',load);
-  restore(); load();
+  $('[data-collection-scope]').onchange=e=>{autoScope=true;navigate({collection:e.target.value},true);};
+  $('[data-back]').onclick=()=>{if(returnState){const previous=returnState;returnState=null;params=previous;navigate({});}else navigate({},true);};
+  $('[data-more]').onclick=()=>{const limit=Number(params.get('limit')||defaultLimit());navigate(limit>=200?{offset:Number(params.get('offset')||0)+200,limit:defaultLimit()}:{limit:Math.min(200,limit+defaultLimit())});};
+  $('[data-neighbor-limit]').onchange=e=>navigate({limit:e.target.value});
+  $('[data-cites]').onchange=e=>navigate({include_cites:e.target.checked?'1':'0'});
+  $('[data-similar]').onchange=e=>navigate({include_similar:e.target.checked?'1':'0'});
+  $('[data-edge-limit]').onchange=e=>navigate({edge_limit:e.target.value});
+  $('[data-context]').onchange=e=>navigate({include_context:e.target.checked?'1':'0'});
+  $('[data-detail-close]').onclick=closeDetail;
+  $('[data-retry]').onclick=load;
+  $('[data-refresh]').onclick=async()=>{try{await json('/api/graph/refresh',{method:'POST',headers:{'X-Carrel':'1'}});overviewCache.clear();load();}catch(error){feedback(error.message,'error');}};
+  root.querySelectorAll('[data-graph-export]').forEach(b=>b.onclick=()=>renderer?.exportGraph(b.dataset.graphExport,b.dataset.exportScope==='viewport'));
+  $('[data-locate-input]').oninput=()=>{clearTimeout(locateTimer);locateRequest?.abort();locateSerial++;locateHits=[];closeLocate();locateTimer=setTimeout(findPapers,180);};
+  $('[data-locate-input]').onkeydown=e=>{if(e.key==='Escape')closeLocate();if(e.key==='ArrowDown'){$('[data-locate-hit]')?.focus();e.preventDefault();}};
+  $('[data-locate-form]').onsubmit=async e=>{e.preventDefault();clearTimeout(locateTimer);if(!locateHits.length)await findPapers();if(locateHits.length)locatePaper(locateHits[0]);};
+  document.addEventListener('click',e=>{if(!e.target.closest('.explorer-locate'))closeLocate();});
+  window.addEventListener('popstate',()=>{rememberView();activeURL=location.search;autoScope=!new URLSearchParams(location.search).has('mode');restore();load();});
+  window.addEventListener('pagehide',()=>{rememberView();cancelCitations();clearTimeout(timer);clearTimeout(detailTimer);clearTimeout(locateTimer);request?.abort();detailRequest?.abort();locateRequest?.abort();renderer?.destroy();});
+  document.addEventListener('carrel:organization-changed',()=>{overviewCache.clear();load();});
+  restore();load();
 })();

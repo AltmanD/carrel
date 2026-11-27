@@ -17,6 +17,7 @@ class RelationBundle:
     similar: list[Relation] = field(default_factory=list)
     coverage: dict[str, str] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
+    cited_by_count: int | None = None
 
     def all(self) -> list[Relation]:
         return [*self.cites, *self.cited_by, *self.similar]
@@ -28,6 +29,7 @@ class RelationBundle:
             "similar": [r.to_dict() for r in self.similar],
             "coverage": self.coverage,
             "errors": self.errors,
+            "cited_by_count": self.cited_by_count,
         }
 
 
@@ -66,6 +68,9 @@ class RelationCollector:
                 bundle.errors["resolve"] = str(exc)
 
         if work is not None and self.openalex is not None:
+            count = work.get("cited_by_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                bundle.cited_by_count = count
             try:
                 bundle.cites = self.openalex.cited_works(work, limit=self.cites_limit)
                 # Bare OpenAlex IDs are unreadable in the UI; hydrate titles,

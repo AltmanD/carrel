@@ -52,8 +52,29 @@ def test_reject_contaminated_title(value):
     assert title_issues(value, SOURCE)
 
 
+@pytest.mark.parametrize('value', [
+    'MuZero：基于学习模型的超人规划算法（MuZero）——不对，仅输出标题翻译',
+    '标题——抱歉，重新翻译', '仅输出标题翻译',
+    '学习模型规划——不对', '学习模型规划——错了，重新翻译',
+    '抱歉，只输出中文标题', '学习模型规划——格式要求：仅输出标题',
+    '标题翻译：学习模型规划',
+])
+def test_reject_translator_self_correction(value):
+    assert title_issues(value, SOURCE)
+    assert title_issues(value, SOURCE, human=True)
+    projected = project_title({'id': 'p', 'title': SOURCE, 'title_zh': value})
+    assert projected['title_pending']
+    assert projected['display_title'] == SOURCE
+
+
+def test_scientific_title_with_instruction_words_is_valid():
+    assert not title_issues('JSON 输出格式的学习与评估', SOURCE)
+
+
 @pytest.mark.parametrize('value', ['FlashAttention：面向 IO 的精确注意力',
-    '[CLS] 表示的贡献：使用 $O(n^2)$ 复杂度的摘要方法', GOOD])
+    '[CLS] 表示的贡献：使用 $O(n^2)$ 复杂度的摘要方法', GOOD,
+    '不对称博弈中的规划与学习', 'JSON 约束下的语言模型生成',
+    '重新思考模型规划', '遵循规则的智能体学习', '标题翻译任务中的跨语言迁移'])
 def test_valid_scientific_titles(value):
     assert not title_issues(value, SOURCE)
 
